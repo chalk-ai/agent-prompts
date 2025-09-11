@@ -90,8 +90,7 @@ Resolvers define HOW feature values are computed. There are three types:
 -- source: pg_users
 -- resolves: User
 -- type: online
--- count: 1
-select id, name, email, birthday from users where id=$\{user.id}
+select id, name, email, birthday from users
 ```
 
 **Generated SQL Resolvers:**
