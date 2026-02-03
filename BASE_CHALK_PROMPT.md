@@ -1,6 +1,15 @@
 
 # Chalk Development Guidelines
 
+## Chalk Documentation
+
+For complete Chalk documentation optimized for AI assistants:
+
+- **Quick reference**: https://docs.chalk.ai/llms.txt (~200KB, core concepts)
+- **Full documentation**: https://docs.chalk.ai/llms-full.txt (~800KB, comprehensive)
+
+Fetch these URLs when you need detailed API references, examples, or information beyond what's included above.
+
 This document provides comprehensive guidelines for writing correct Chalk code based on the official Chalk documentation.
 
 **For additional help:** Use https://docs.chalk.ai or review examples at https://github.com/chalk-ai/examples to learn.
