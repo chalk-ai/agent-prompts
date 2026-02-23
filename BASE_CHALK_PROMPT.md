@@ -195,6 +195,84 @@ transaction_stream = make_stream_resolver(
 - Map message fields to features using `output_features` dictionary
 - Use `chalk.functions` (e.g., `F.from_unix_seconds`) for transformations
 
+**Parsing Avro messages:**
+```python
+from chalk.features.resolver import make_stream_resolver
+from chalk.streams import KafkaSource
+from chalk.features import _
+import chalk.functions as F
+from pydantic import BaseModel
+
+events_kafka = KafkaSource(name="events_topic")
+
+AVRO_SCHEMA = """
+{
+  "type": "record",
+  "name": "EventMessage",
+  "fields": [
+    {"name": "timestamp", "type": "long"},
+    {"name": "user_id", "type": "int"},
+    {"name": "event_type", "type": "string"}
+  ]
+}
+"""
+
+class EventMessage(BaseModel):
+    timestamp: int
+    user_id: int
+    event_type: str
+
+# Parse raw bytes to structured message
+parsed_message = F.avro_deserialize(_, schema=AVRO_SCHEMA, target_type=EventMessage)
+
+# Handle parse failures gracefully with F.recover
+safe_parsed = F.recover(parsed_message, None)
+
+event_stream = make_stream_resolver(
+    name="get_events_stream",
+    source=events_kafka,
+    parse=safe_parsed,
+    message_type=EventMessage,
+    output_features={
+        Event.id: F.cast(_.user_id, str) + "_" + F.cast(_.timestamp, str),
+        Event.user_id: _.user_id,
+        Event.timestamp: F.from_unix_seconds(_.timestamp),
+        Event.event_type: _.event_type,
+    },
+)
+```
+
+**Parsing Protobuf messages:**
+```python
+from messages.user_pb2 import UserMessage  # Import generated protobuf classes
+from chalk.features.resolver import make_stream_resolver
+from chalk.features import _
+import chalk.functions as F
+
+# Strip first 6 bytes (e.g., header), then parse the protobuf message
+parsed_message = F.proto_deserialize(F.substr(_, 6, None), UserMessage)
+
+# Exclude any UserMessages whose user_type == GUEST
+parse_expression = F.if_then_else(
+    parsed_message.user_type == UserMessage.UserType.GUEST,
+    None,
+    parsed_message,
+)
+
+users_streaming_resolver = make_stream_resolver(
+    name="get_users_stream",
+    source=kafka_source,
+    message_type=UserMessage,
+    parse=parse_expression,
+    output_features={
+        User.user_id: _.id,
+        User.full_name: _.name,
+        User.email_address: _.contact_info.email_address,  # Nested field access
+        User.updated_at: F.from_unix_seconds(_.updated_at / 1_000_000),
+    },
+)
+```
+
 ### 4. Expressions (High-Performance Inline Features)
 
 ```python
