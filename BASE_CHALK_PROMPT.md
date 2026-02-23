@@ -409,7 +409,7 @@ from typing import TYPE_CHECKING
 from chalk.features import features, has_many, DataFrame
 
 if TYPE_CHECKING:
-    from .user import User
+    from src.models.user import User
 
 @features
 class Transaction:
