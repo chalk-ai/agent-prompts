@@ -155,7 +155,7 @@ def get_reference_data() -> DataFrame[
     )
 ```
 
-Static resolvers (`static=True`) run once at deployment startup, ideal for loading reference data from S3 or cloud storage. Use `chalkdf.DataFrame` for scanning parquet files.
+Static resolvers (`static=True`) run once at deployment startup to generate a plan: ideal for loading reference data from S3 or cloud storage. Use `chalkdf.DataFrame` for scanning parquet files.
 
 ### 3. Streaming Resolvers
 
