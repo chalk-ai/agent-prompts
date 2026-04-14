@@ -415,6 +415,8 @@ All messages in a poll cycle are batched into a single Arrow table and forwarded
 - `STREAMING_CONSUMER_MAX_RECORDS` (default 250): max messages fetched per poll cycle → controls Arrow table row count
 - `MESSAGE_PROCESSOR_BATCH_SIZE`: sub-batch messages within a cycle before sending (useful to reduce per-call latency at the cost of more gRPC calls)
 
+These should be set on `Streaming Server` chalk resource.
+
 ---
 
 ## Native vs Non-Native Stream Resolvers
@@ -464,6 +466,8 @@ output_features={
 | `SINGLEPROCESS_MESSAGES_FOR_RESOLVERS` | (none) | Comma-separated resolver FQNs; process one message at a time (for stateful/side-effectful resolvers) |
 | `STREAMING_CONNECTION_TIMEOUT_MS` | 30000 | Initial connector connection timeout (ms) |
 | `STREAMING_POLL_BUDGET_MS` | 5000 | Poll retry budget for Kinesis EFO (ms) |
+
+These should be set on `Streaming Server` chalk resource.
 
 ### Load Balancing
 
