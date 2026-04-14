@@ -343,7 +343,6 @@ output_features={
 | `SINGLEPROCESS_MESSAGES_FOR_RESOLVERS` | (none) | Comma-separated resolver FQNs; process one message at a time (for stateful/side-effectful resolvers) |
 | `STREAMING_CONNECTION_TIMEOUT_MS` | 30000 | Initial connector connection timeout (ms) |
 | `STREAMING_POLL_BUDGET_MS` | 5000 | Poll retry budget for Kinesis EFO (ms) |
-| `CHALK_RESUBSCRIBE_EMPTY_SHARDS_AFTER_DURATION_MS` | (none) | Kinesis EFO resubscribe threshold (ms) |
 
 ### Load Balancing
 
