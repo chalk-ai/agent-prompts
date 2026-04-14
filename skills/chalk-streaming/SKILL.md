@@ -1,6 +1,6 @@
 ---
 name: chalk-streaming
-description: Use when writing, debugging, testing, or tuning Chalk stream resolvers — Kafka, Kinesis, or PubSub sources, make_stream_resolver patterns, parse expressions, deduplication, late arrival, feature time, resource groups, or streaming worker configuration.
+description: Use when writing, debugging, testing, or tuning Chalk stream resolvers — Kafka, Kinesis, or PubSub sources, make_stream_resolver patterns, parse expressions, sinks, deduplication, late arrival, feature time, resource groups, streaming worker configuration, or testing with check_stream_parsing / StreamMessage.
 ---
 
 # Chalk Streaming
@@ -67,11 +67,16 @@ get_orders = make_stream_resolver(
 **Data flow:**
 ```
 Source (Kafka/Kinesis/PubSub)
-  → Streaming worker polls messages
-  → Messages batched and parse expression applied
-  → Parsed Arrow batch forwarded to engine-grpc
-  → Engine runs resolver, returns features
-  → Features published to online store + offline store via result bus
+- On engine-grpc boot, plans are generated for each of the following:
+    1. parsing + online scalar feature,
+    2. (optional) sinks—if a Sink is specified
+    3. (optional) materialized aggregates—if materialized aggregates depend on the streamed features
+- Streaming worker polls messages,
+- Messages are batched and sent to engine-grpc,
+- Engine grpc runs the parsing plan, and then the materialized-aggregate/sink plan,
+- Features and aggregates are published syncronously to the online store
+- Features are pushed to the result-bus for offline store persistence
+- Sink features are pushed to the sink stream
 ```
 
 ---
@@ -94,6 +99,90 @@ make_stream_resolver(
     output_features={...},
 )
 ```
+
+---
+
+## Writing to a Sink
+
+Native streaming resolvers can write computed features to downstream Kafka topics using the `Sink` parameter. This enables chaining of stream processing stages, where one resolver's output becomes another resolver's input. This pattern is particularly useful for:
+
+- **Multi-stage processing pipelines**: Break complex transformations into discrete stages
+- **Feature routing**: Direct specific features to specialized processing streams
+- **Model inference workflows**: Send features to GPU-accelerated resolvers for heavy computation
+
+The sink specifies which output features should be written to the destination stream. These features are computed by the resolver or by downstream resolvers that depend on the initial resolver's outputs.
+
+### Example: Item Embedding Pipeline
+
+This example demonstrates a two-stage pipeline where items are first processed through a native streaming resolver, then routed to a GPU-accelerated resolver for embedding generation:
+
+```python
+from chalk.streams import KafkaSource
+from chalk.features.resolver import Sink, make_stream_resolver
+from chalk.features import _
+from chalk import online
+from pydantic import BaseModel
+from src.models import Item
+import numpy as np
+
+
+class ItemMessage(BaseModel):
+    id: int
+    name: str
+    price: float
+    description: str
+    image_url: str
+
+
+new_items = KafkaSource(
+    name="new_items",
+)
+
+embedding_stream = KafkaSource(
+    name="item_embeddings",
+)
+
+make_stream_resolver(
+    name="process_new_items",
+    source=new_items,
+    message_type=ItemMessage,
+    output_features={
+        Item.id: _.id,
+        Item.name: _.name,
+        Item.price: _.price,
+        Item.description: _.description,
+        Item.image_url: _.image_url,
+    },
+    sink=Sink(
+        send_to=embedding_stream,
+        output_features=[Item.id, Item.embedding],
+    ),
+)
+
+@online(resource_hint="gpu")
+def run_item_embedding_model(
+    price: Item.price,
+    description: Item.description,
+    state: Item.state,
+    image_url: Item.image_url,
+) -> Item.embedding:
+    """Mock generate item embedding using a pre-trained model."""
+    # In a real implementation, this function would load a pre-trained model
+    # and generate an embedding based on the input features or make an API
+    # call to an external service.
+    return np.random.rand(128).tolist()
+```
+
+In this example:
+
+- The `process_new_items` resolver consumes messages from the `new_items` Kafka source and extracts basic item features
+- The sink configuration specifies that `Item.id` and `Item.embedding` should be written to the `item_embeddings` stream
+- When a message is processed, Chalk computes `Item.embedding` by calling the `run_item_embedding_model` resolver, which runs on a GPU-enabled instance
+- The computed features are then written to the `item_embeddings` topic
+
+This pattern allows the lightweight native streaming resolver to handle high-throughput message parsing while delegating compute-intensive embedding generation to specialized GPU resources. The sink acts as a bridge, automatically triggering the downstream computation and routing results to the appropriate stream.
+
+Messages can be encoded as either Arrow IPC streams or as JSON. The fully qualified feature names are used as the column names in the output stream or as the JSON keys.
 
 ---
 
@@ -245,7 +334,7 @@ kafka_source = KafkaSource(
 
 ## Testing Stream Resolvers
 
-### `test_streaming_resolver` / `check_stream_parsing`
+### `test_streaming_resolver`
 
 ```python
 import fastavro, io
@@ -256,12 +345,12 @@ def serialize_avro(schema_dict, record):
     fastavro.schemaless_writer(buf, schema, record)
     return buf.getvalue()
 
-MATCHING_HEADER = [("Firehose-Event-Type", b"com.example.MyEventV1")]
-WRONG_HEADER    = [("Firehose-Event-Type", b"com.example.OtherEvent")]
+MATCHING_HEADER = [("Event-Type", b"com.example.MyEventV1")]
+WRONG_HEADER    = [("Event-Type", b"com.example.OtherEvent")]
 
 records = [
-    {"profileId": 42, "timestamp": 1700000000000},  # should match
-    {"profileId": 99, "timestamp": 1700000001000},  # should be filtered (wrong header)
+    {"userId": 42, "timestamp": 1700000000000},  # should match
+    {"userId": 99, "timestamp": 1700000001000},  # should be filtered (wrong header)
 ]
 
 result = chalk_client.test_streaming_resolver(
@@ -286,6 +375,38 @@ assert df[1]["my_entity.id"].item() is None
 - `result.features`: Polars DataFrame — one row per input message
   - A row of nulls = the message was skipped/filtered by the parse expression
   - Use `.item()` to extract a scalar from a single-element Polars Series
+
+### `check_stream_parsing` (local unit testing)
+
+`check_stream_parsing` tests the parse expression of a stream resolver locally, without a Chalk client or deployment. Use it in unit tests to verify that your `parse` expression maps raw message bytes to the expected feature values.
+
+```python
+from chalk.testing import StreamMessage, check_stream_parsing
+import json
+
+check_stream_parsing(
+    my_stream_resolver,
+    [
+        StreamMessage(
+            message=json.dumps({"event_id": 20, "value": 2.5}).encode(),
+            parsed=Event(
+                event_id=20,
+                value=2.5,
+            ),
+        ),
+    ],
+)
+```
+
+**Parameters:**
+- `resolver`: the stream resolver whose parser to test
+- `assertions`: list of `StreamMessage(message=<bytes>, parsed=<FeatureClass instance>)`
+- `show_table`: if `True`, always prints a comparison table; default only prints on mismatch
+- `float_rel_tolerance` / `float_abs_tolerance`: tolerances for float comparisons (defaults: `1e-6` / `1e-12`); values pass if *either* tolerance is met
+
+**Raises** `AssertionError` on mismatches, `ValueError` if a feature lacks an underscore expression, `MissingDependencyException` if `chalkdf` is not installed.
+
+Use `check_stream_parsing` for fast local feedback on parse logic; use `test_streaming_resolver` (via `ChalkClient`) to validate the full resolver end-to-end against a deployed environment.
 
 ### Batching DF Calls (stream → engine-gRPC)
 
@@ -398,9 +519,8 @@ Resource groups are also used for per-group Datadog metric tagging (tagged as `r
 
 | Mistake | Fix |
 |---|---|
-| Forgetting `include_message_envelope=True` | Required to access `this.message_headers` and `this.message_data`; without it both fields are `None` |
-| Using `_` instead of `this` in envelope-aware parse expressions | `_` refers to the root message body; `this` refers to the full envelope — use `this` when `include_message_envelope=True` |
-| Header value passed as `str` instead of `bytes` | `F.map_get(this.message_headers, "X-Type") == b"value"` — the value side must be `bytes` |
+| Forgetting `include_message_envelope=True` | Required to access `_.message_headers` and `_.message_data`; without it both fields are `None` |
+| Header value passed as `str` instead of `bytes` | `F.map_get(_.message_headers, "X-Type") == b"value"` — the value side must be `bytes` |
 | Missing `F.recover()` around `F.avro_deserialize()` | Without `recover`, a single malformed message crashes the entire batch; wrap with `F.recover(expr, None)` |
 | Deduplication dropping unexpected messages | Dedup key collision across different entities; use a more unique `on=` field (e.g., include entity ID) |
 | Timestamp not reflected in offline store | Feature time defaults to message envelope timestamp; to use a payload timestamp, map it to a `FeatureTime` feature in `output_features` |
@@ -441,21 +561,21 @@ get_transactions = make_stream_resolver(
 For multi-event topics where messages are distinguished by a header:
 
 ```python
-from chalk.features import _ as this
+from chalk.features import _ 
 import chalk.functions as F
 from chalk.features.resolver import make_stream_resolver
 from pydantic import BaseModel
 
 class MyEventModel(BaseModel):
-    profileId: int
+    userId: int
     timestamp: int
 
 EVENT_TYPE = b"com.example.MyEventV1"
 
 parsed_message = F.if_then_else(
-    F.map_get(this.message_headers, "Firehose-Event-Type") == EVENT_TYPE,
+    F.map_get(_.message_headers, "Event-Type") == EVENT_TYPE,
     if_true=F.recover(
-        F.avro_deserialize(this.message_data, schema=AVRO_SCHEMA, target_type=MyEventModel),
+        F.avro_deserialize(_.message_data, schema=AVRO_SCHEMA, target_type=MyEventModel),
         None,
     ),
     if_false=None,
@@ -467,8 +587,8 @@ my_resolver = make_stream_resolver(
     parse=parsed_message,
     message_type=MyEventModel,
     output_features={
-        MyEntity.id: this.profileId,
-        MyEntity.event_time: F.from_unix_milliseconds(this.timestamp),
+        MyEntity.id: _.userId,
+        MyEntity.event_time: F.from_unix_milliseconds(_.timestamp),
     },
 )
 ```
@@ -516,8 +636,8 @@ Useful proto helper functions:
 - `F.proto_timestamp_to_datetime(field)` — convert `google.protobuf.Timestamp` to datetime
 
 ### Key parsing notes
-- `include_message_envelope=True` is required to access `this.message_headers` and `this.message_data`
-- `F.map_get(this.message_headers, "Header-Name")` for header lookup
+- `include_message_envelope=True` is required to access `_.message_headers` and `_.message_data`
+- `F.map_get(_.message_headers, "Header-Name")` for header lookup
 - `F.recover(expr, None)` swallows parse errors and returns `None` instead of failing
 - `parse` returning `None` → message is silently skipped, no features are written to any store
 
@@ -527,7 +647,7 @@ Useful proto helper functions:
 
 | Error | Cause | Fix |
 |---|---|---|
-| `this.message_headers` is `None` at runtime | `include_message_envelope=True` not set on `make_stream_resolver` | Add `include_message_envelope=True` |
+| `_.message_headers` is `None` at runtime | `include_message_envelope=True` not set on `make_stream_resolver` | Add `include_message_envelope=True` |
 | All rows null in `test_streaming_resolver` result | Header value compared as `str` instead of `bytes` | Use `b"value"` (bytes literal) in the parse expression comparison |
 | Features not appearing in online store | `skip_online=True` set unintentionally, or resolver assigned to wrong resource group | Verify resolver config and resource group name matches `CHALK_RESOURCE_GROUP` |
 | Features not appearing in offline store | `skip_offline=True` set, or feature time is far in the future/past | Check `skip_offline` flag and timestamp field mapping |
