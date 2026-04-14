@@ -61,7 +61,7 @@ get_orders = make_stream_resolver(
 **Components:**
 
 - **Streaming worker** (Rust): polls the message source, batches and parses messages, and forwards results to the execution engine via gRPC
-- **Execution engine** (engine-grpc): receives Arrow-serialized batches, runs the resolver function, and returns feature results
+- **Execution engine** (engine-grpc): receives Arrow-serialized batches, runs the resolver function, updates materialized aggregates, and uploads features to the online store
 - **Control plane**: provides pause/resume/seek/reset operations for stream workers
 
 **Data flow:**
