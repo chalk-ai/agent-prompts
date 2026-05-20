@@ -11,7 +11,7 @@ description: Use when writing, refactoring, or debugging Chalk `@online` Python 
 - Choosing between a Python resolver and a feature expression (`F.http_post`, `_.foo`, SQL file)
 - Picking the right input/output shape: scalar, `Features[...]`, `DataFrame[...]`, has-many
 - Pulling fields from related namespaces via dotted feature paths
-- Adding `Now` for "as-of" / point-in-time arithmetic
+- Adding `Now` for "as-of" / point-in-time arithmetic (optional; mostly for time-dependent features like age calculations)
 - Parsing protobuf / JSON / vendor payloads into many features at once
 - Aggregating a has-many `DataFrame` down to a scalar (risk score, totals, ratios)
 - Tagging resolvers, scoping to an environment, or routing to a specific machine type
@@ -65,6 +65,16 @@ def normalize_score(raw: User.raw_score) -> User.normalized_score:
 ```
 
 Each input is a `Class.field`. Chalk resolves the value for that entity and passes it as the typed argument.
+
+### 1b. No-argument resolver (constants / env lookups)
+
+```python
+@online
+def get_platform_version() -> Config.platform_version:
+    return os.getenv("PLATFORM_VERSION", "2.1.0")
+```
+
+Use when the value is a constant, comes from environment, or is derived from process-local state. Called once per query — not cached across requests; if you want caching, set `max_staleness` on the feature.
 
 ### 2. Cross-namespace input via dotted path
 
@@ -236,20 +246,20 @@ Reach for a Python `@online` when none of these compose to what you need.
 ## Decorator Options
 
 ```python
-@online                                  # bare — runs in default env, no tags, no machine hint
-@online(tags=["pii"])                    # gates by tag at query time
-@online(environment="production")        # only runs in this env
-@online(environments=["staging", "prod"])# allow-list of envs
-@online(machine_type="cpu-large")        # route to a specific machine class
-@online(resource_hint="gpu")             # advisory hint for scheduling (e.g. ML inference)
-@online(static=True)                     # runs once at chalk apply, builds a chalkdf plan
-@online(when=_.tier == "premium")        # conditional — only runs for matching entities
-@online(cron="*/5 * * * *")              # scheduled re-resolution (rare)
+@online                                       # bare — runs in default env, no tags, no machine hint
+@online(tags=["pii"])                         # gates by tag at query time
+@online(environment="production")             # only runs in this env
+@online(machine_type="cpu-large")             # route to a specific machine class
+@online(resource_hint="cpu")                  # scheduling hint: "cpu", "io", or "gpu"
+@online(resource_group="streaming")           # pin to a named worker resource group
+@online(static=True)                          # runs once at chalk apply, builds a chalkdf plan
+@online(owner="team-fraud")                   # surfaces in dashboards, lineage, and alerts
+@online(timeout="5s")                         # per-call timeout; resolver fails if exceeded
 ```
 
 - **Default to bare `@online`.** Add options only when there's a concrete reason.
+- `resource_hint`: `"gpu"` for ML inference; `"cpu"` is common for compute-heavy aggregations on has-many DataFrames; `"io"` for I/O-bound work. The hint is **advisory** — actual routing happens in the worker dispatcher, not at plan time.
 - `static=True` is a different beast — see the `writing-static-chalkdf` skill.
-- `resource_hint="gpu"` is the standard way to send a feature through a GPU-equipped node for inference.
 
 ---
 
@@ -281,17 +291,19 @@ Chalk represents missing data as `None`. Adopt these conventions and most footgu
 
 Conventions that scale well in real codebases:
 
-- **One file per logical domain**: `account_resolvers.py`, `risk_resolvers.py`, `proto_parsers.py`, `request_builders.py`. Avoid one giant `resolvers.py`.
+- **Small projects (<50 resolvers): a single `resolvers.py` is fine.** Larger codebases benefit from splitting by domain: `account_resolvers.py`, `risk_resolvers.py`, `proto_parsers.py`. Pick the cut that matches your team's mental model.
 - **Helpers prefixed with `_`** and kept in the same file as their caller (or in a `helpers/` subdir if shared across domains).
-- **Module-level singletons for auth / clients** instead of constructing per-call:
+- **Module-level singletons for DB clients, HTTP sessions, and auth helpers** — instantiated once at import time, reused across resolvers:
   ```python
-  # utils/grpc_requests.py
-  def get_url(path: str) -> str:
-      return f"https://{HOST}{path}"
-  def get_headers() -> dict[str, str]:
-      return {"X-Env-Id": ENV_ID, "Content-Type": "application/proto"}
+  # src/datasources.py — DB clients
+  pg = PostgreSQLSource(name="financials_db")
+  snowflake = SnowflakeSource(name="warehouse")
+
+  # src/utils/grpc_requests.py — HTTP helpers used inside F.http_post(...)
+  def get_url(path: str) -> str: ...
+  def get_headers() -> dict[str, str]: ...
   ```
-  Use these inside `F.http_post(...)` expressions.
+  Don't construct clients inside the resolver body — you'll exhaust connection pools and lose retry/instrumentation benefits.
 - **SQL resolvers** live as `.chalk.sql` files in `src/resolvers/sql/` and don't need a Python wrapper. Chalk discovers them automatically.
 - **Imports at the top of every resolver file:**
   ```python
@@ -300,6 +312,40 @@ Conventions that scale well in real codebases:
   from datetime import datetime, timedelta
   from src.models import ...
   ```
+
+### Logging
+
+Import `chalk_logger` for resolver-side logs that flow into Chalk's observability:
+
+```python
+from chalk.clogging import chalk_logger
+
+@online
+def parse_vendor_response(body: Vendor.response_body) -> Vendor.parsed_id:
+    try:
+        payload = vendor_pb2.Response.FromString(body)
+        return payload.id
+    except Exception as e:
+        chalk_logger.info(f"vendor parse failed: {e}")
+        return None
+```
+
+- Prefer `return None` + log over `raise` for known-failure cases — keeps the rest of the feature graph computable.
+- Don't log raw PII or vendor payloads — log identifiers and error classes.
+
+### Request-scoped metadata via `ChalkContext`
+
+Use `ChalkContext.get(key)` to read metadata the caller attached at query time via `ChalkClient.query(context={...})`. Useful for correlation IDs, tenant flags, A/B variants — anything that varies per request without changing the resolver signature:
+
+```python
+from chalk import ChalkContext
+
+@online
+def get_pricing_tier(base: Account.base_tier) -> Account.pricing_tier:
+    if ChalkContext.get("experiment") == "premium-rollout":
+        return "premium"
+    return base
+```
 
 ---
 
