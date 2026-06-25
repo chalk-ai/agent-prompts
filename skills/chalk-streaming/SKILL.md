@@ -191,7 +191,7 @@ Messages can be encoded as either Arrow IPC streams or as JSON. The fully qualif
 A resolver writes one row per message by default. To emit **one row per element** of a collection in the message (the equivalent of a legacy `@stream` resolver that returned a `DataFrame`), write a `parse` expression that returns a **list** — Chalk explodes it and runs `output_features` once per element.
 
 Key points:
-- `message_type` describes a **single element** (one output row), not the list. The `parse` expression produces the list.
+- Set `message_type=list[Element]` — the list type is what tells the engine to explode (a singular `Element` would **not** fan out). `Element` is one output row's worth; the `parse` expression produces the list.
 - `output_features` run **per exploded element**; `_` is one element at a time.
 - An empty/absent list → **zero rows**. To drop a whole message, `parse` may return `None`.
 - Inside the transform you can reference both the current element and outer message fields, so per-element derived keys work.
@@ -208,7 +208,7 @@ class UserTagRow(BaseModel):
 user_tags_resolver = make_stream_resolver(
     name="process_user_tags",
     source=kafka_source,
-    message_type=UserTagRow,             # one element == one output row
+    message_type=list[UserTagRow],       # list[Element] -> engine fans out one row per element
     parse=F.array_transform(
         F.json_extract_array(F.bytes_to_string(_, "utf-8"), "$.tags"),
         lambda tag: F.struct_pack(
@@ -240,7 +240,7 @@ class LineItemRow(BaseModel):
 order_items_resolver = make_stream_resolver(
     name="process_order_items",
     source=kafka_source,
-    message_type=LineItemRow,
+    message_type=list[LineItemRow],                          # list[Element] -> engine fans out per element
     parse=F.array_transform(
         F.proto_deserialize(_, Order).items,                  # repeated child
         lambda item: F.struct_pack(
