@@ -203,20 +203,21 @@ class UserTagRow(BaseModel):
     user_id: str
     tag: str
 
-_msg = F.bytes_to_string(_, "utf-8")
-# json_value / json_extract_array return an arrow.json extension type — cast
-# string-ish values to large_string before string ops like `+`.
-_tags = F.json_extract_array(_msg, "$.tags")
-_user = F.cast(F.json_value(_msg, "$.user_id"), pa.large_string())
-
+# json_value / json_extract_array yield an arrow.json extension type — cast string-ish
+# values to large_string before string ops like `+`.
 user_tags_resolver = make_stream_resolver(
     name="process_user_tags",
     source=kafka_source,
     message_type=UserTagRow,             # one element == one output row
     parse=F.array_transform(
-        _tags,
-        lambda tag: F.struct_pack({"user_id": _user, "tag": F.cast(tag, pa.large_string())}),
-        item_type=pa.large_string(),     # element type of `_tags`
+        F.json_extract_array(F.bytes_to_string(_, "utf-8"), "$.tags"),
+        lambda tag: F.struct_pack(
+            {
+                "user_id": F.cast(F.json_value(F.bytes_to_string(_, "utf-8"), "$.user_id"), pa.large_string()),
+                "tag": F.cast(tag, pa.large_string()),
+            }
+        ),
+        item_type=pa.large_string(),     # type of each array element
     ),
     output_features={
         UserTag.id: _.user_id + ":" + _.tag,   # runs per element
@@ -236,18 +237,20 @@ class LineItemRow(BaseModel):
     item_id: str
     sku: str
 
-_order = F.proto_deserialize(_, Order)   # parent, deserialized once
-
 order_items_resolver = make_stream_resolver(
     name="process_order_items",
     source=kafka_source,
     message_type=LineItemRow,
     parse=F.array_transform(
-        _order.items,                        # repeated child
+        F.proto_deserialize(_, Order).items,                  # repeated child
         lambda item: F.struct_pack(
-            {"order_id": _order.id, "item_id": item.id, "sku": item.sku}  # parent field copied in
+            {
+                "order_id": F.proto_deserialize(_, Order).id,  # parent field copied in
+                "item_id": item.id,
+                "sku": item.sku,
+            }
         ),
-        item_type=LineItem,                  # the element's protobuf message class
+        item_type=LineItem,                                   # the element's protobuf message class
     ),
     output_features={
         OrderLineItem.id: _.order_id + ":" + _.item_id,
@@ -258,7 +261,6 @@ order_items_resolver = make_stream_resolver(
 
 **Gotchas:**
 - Transform the array *itself* when you only need element values — an empty array then yields zero rows automatically.
-- If you need a positional index (e.g. a unique key when elements repeat), use `F.array_transform(F.sequence(0, F.cardinality(arr) - 1), lambda i: ...)` with `F.element_at(arr, i)` — but `element_at` is **0-indexed** and `sequence(0, -1)` is **not** empty, so guard the empty case with `F.if_then_else(F.cardinality(arr) > 0, ..., None)`.
 - Test fan-out locally with `check_stream_parsing` by passing `parsed=[row, row, ...]` (and `parsed=[]` for the zero-row case).
 
 ---
