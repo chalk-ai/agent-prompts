@@ -226,10 +226,9 @@ user_tags_resolver = make_stream_resolver(
 )
 ```
 
-**Fan out over a repeated protobuf field** — `F.proto_deserialize` + `F.array_transform`. Struct elements need an explicit `item_type`:
+**Fan out over a repeated protobuf field** — `F.proto_deserialize` + `F.array_transform`. Struct elements need an explicit `item_type`; pass the element's protobuf message class:
 
 ```python
-from chalk.features._encoding.protobuf import convert_proto_message_type_to_pyarrow_type
 from messages.order_pb2 import Order, LineItem   # Order has `id` + repeated `items`
 
 class LineItemRow(BaseModel):
@@ -248,7 +247,7 @@ order_items_resolver = make_stream_resolver(
         lambda item: F.struct_pack(
             {"order_id": _order.id, "item_id": item.id, "sku": item.sku}  # parent field copied in
         ),
-        item_type=convert_proto_message_type_to_pyarrow_type(LineItem.DESCRIPTOR),
+        item_type=LineItem,                  # the element's protobuf message class
     ),
     output_features={
         OrderLineItem.id: _.order_id + ":" + _.item_id,
