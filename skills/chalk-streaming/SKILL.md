@@ -203,18 +203,19 @@ class UserTagRow(BaseModel):
     user_id: str
     tag: str
 
-# json_value / json_extract_array yield an arrow.json extension type — cast string-ish
-# values to large_string before string ops like `+`.
+# json_value / json_extract_array yield an arrow.json extension type — cast before use.
+# Cast the *array* to large_list<large_string> so the array_transform lambda's element type
+# unifies; a large_string lambda over a large_list<arrow.json> is rejected at deploy validation.
 user_tags_resolver = make_stream_resolver(
     name="process_user_tags",
     source=kafka_source,
     message_type=list[UserTagRow],       # list[Element] -> engine fans out one row per element
     parse=F.array_transform(
-        F.json_extract_array(F.bytes_to_string(_, "utf-8"), "$.tags"),
+        F.cast(F.json_extract_array(F.bytes_to_string(_, "utf-8"), "$.tags"), pa.large_list(pa.large_string())),
         lambda tag: F.struct_pack(
             {
                 "user_id": F.cast(F.json_value(F.bytes_to_string(_, "utf-8"), "$.user_id"), pa.large_string()),
-                "tag": F.cast(tag, pa.large_string()),
+                "tag": tag,
             }
         ),
         item_type=pa.large_string(),     # type of each array element
