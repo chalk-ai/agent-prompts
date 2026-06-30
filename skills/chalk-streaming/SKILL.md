@@ -186,6 +186,86 @@ Messages can be encoded as either Arrow IPC streams or as JSON. The fully qualif
 
 ---
 
+## Fan-out: one message to many rows
+
+A resolver writes one row per message by default. To emit **one row per element** of a collection in the message (the equivalent of a legacy `@stream` resolver that returned a `DataFrame`), write a `parse` expression that returns a **list** — Chalk explodes it and runs `output_features` once per element.
+
+Key points:
+- Set `message_type=list[Element]` — the list type is what tells the engine to explode (a singular `Element` would **not** fan out). `Element` is one output row's worth; the `parse` expression produces the list.
+- `output_features` run **per exploded element**; `_` is one element at a time.
+- An empty/absent list → **zero rows**. To drop a whole message, `parse` may return `None`.
+- Inside the transform you can reference both the current element and outer message fields, so per-element derived keys work.
+
+**Fan out over a JSON array** — `F.json_extract_array` + `F.array_transform`:
+
+```python
+class UserTagRow(BaseModel):
+    user_id: str
+    tag: str
+
+# json_value / json_extract_array yield an arrow.json extension type — cast before use.
+# Cast the *array* to large_list<large_string> so the array_transform lambda's element type
+# unifies; a large_string lambda over a large_list<arrow.json> is rejected at deploy validation.
+user_tags_resolver = make_stream_resolver(
+    name="process_user_tags",
+    source=kafka_source,
+    message_type=list[UserTagRow],       # list[Element] -> engine fans out one row per element
+    parse=F.array_transform(
+        F.cast(F.json_extract_array(F.bytes_to_string(_, "utf-8"), "$.tags"), pa.large_list(pa.large_string())),
+        lambda tag: F.struct_pack(
+            {
+                "user_id": F.cast(F.json_value(F.bytes_to_string(_, "utf-8"), "$.user_id"), pa.large_string()),
+                "tag": tag,
+            }
+        ),
+        item_type=pa.large_string(),     # type of each array element
+    ),
+    output_features={
+        UserTag.id: _.user_id + ":" + _.tag,   # runs per element
+        UserTag.user_id: _.user_id,
+        UserTag.tag: _.tag,
+    },
+)
+```
+
+**Fan out over a repeated protobuf field** — `F.proto_deserialize` + `F.array_transform`. Struct elements need an explicit `item_type`; pass the element's protobuf message class:
+
+```python
+from messages.order_pb2 import Order, LineItem   # Order has `id` + repeated `items`
+
+class LineItemRow(BaseModel):
+    order_id: str
+    item_id: str
+    sku: str
+
+order_items_resolver = make_stream_resolver(
+    name="process_order_items",
+    source=kafka_source,
+    message_type=list[LineItemRow],                          # list[Element] -> engine fans out per element
+    parse=F.array_transform(
+        F.proto_deserialize(_, Order).items,                  # repeated child
+        lambda item: F.struct_pack(
+            {
+                "order_id": F.proto_deserialize(_, Order).id,  # parent field copied in
+                "item_id": item.id,
+                "sku": item.sku,
+            }
+        ),
+        item_type=LineItem,                                   # the element's protobuf message class
+    ),
+    output_features={
+        OrderLineItem.id: _.order_id + ":" + _.item_id,
+        OrderLineItem.sku: _.sku,
+    },
+)
+```
+
+**Gotchas:**
+- Transform the array *itself* when you only need element values — an empty array then yields zero rows automatically.
+- Test fan-out locally with `check_stream_parsing` by passing `parsed=[row, row, ...]` (and `parsed=[]` for the zero-row case).
+
+---
+
 ## Materialized Aggregations
 
 When a stream resolver writes to a `DataFrame` relationship, Chalk automatically detects which `windowed(...)` aggregations are affected and updates the relevant time buckets — no special annotation on the resolver is needed. At query time, buckets are merged to produce the final value across the requested window.
@@ -400,7 +480,11 @@ check_stream_parsing(
 
 **Parameters:**
 - `resolver`: the stream resolver whose parser to test
-- `assertions`: list of `StreamMessage(message=<bytes>, parsed=<FeatureClass instance>)`
+- `assertions`: list of `StreamMessage(message=<bytes>, parsed=...)`. The `parsed` value controls what is checked:
+  - a feature instance → assert the message produces exactly one matching row
+  - a **list** of feature instances → for a [fan-out](#fan-out-one-message-to-many-rows) resolver, assert exactly these rows, in emission order
+  - `[]` → assert the message produces **zero** rows (empty array / filtered message). This is a real assertion.
+  - `None` → **skip** all checks for the message; it matches no matter what is computed. Use `[]`, not `None`, to verify a message was dropped.
 - `show_table`: if `True`, always prints a comparison table; default only prints on mismatch
 - `float_rel_tolerance` / `float_abs_tolerance`: tolerances for float comparisons (defaults: `1e-6` / `1e-12`); values pass if *either* tolerance is met
 
