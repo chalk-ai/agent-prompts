@@ -490,6 +490,29 @@ check_stream_parsing(
 
 **Raises** `AssertionError` on mismatches, `ValueError` if a feature lacks an underscore expression, `MissingDependencyException` if `chalkdf` is not installed.
 
+**Testing a fan-out resolver** — pass a list of expected rows, one per emitted element; assert the empty case with `parsed=[]`. Using the `user_tags_resolver` from [Fan-out](#fan-out-one-message-to-many-rows) above:
+
+```python
+check_stream_parsing(
+    user_tags_resolver,
+    [
+        # one message with two tags -> two rows
+        StreamMessage(
+            message=json.dumps({"user_id": "u1", "tags": ["red", "blue"]}).encode(),
+            parsed=[
+                UserTag(id="u1:red", user_id="u1", tag="red"),
+                UserTag(id="u1:blue", user_id="u1", tag="blue"),
+            ],
+        ),
+        # tag-less message -> zero rows ([] asserts emptiness; None would skip the check)
+        StreamMessage(
+            message=json.dumps({"user_id": "u2", "tags": []}).encode(),
+            parsed=[],
+        ),
+    ],
+)
+```
+
 Use `check_stream_parsing` for fast local feedback on parse logic; use `test_streaming_resolver` (via `ChalkClient`) to validate the full resolver end-to-end against a deployed environment.
 
 ### Batching DF Calls (stream → engine-gRPC)
