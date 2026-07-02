@@ -188,7 +188,7 @@ Messages can be encoded as either Arrow IPC streams or as JSON. The fully qualif
 
 ## Fan-out: one message to many rows
 
-A resolver writes one row per message by default. To emit **one row per element** of a collection in the message (the equivalent of a legacy `@stream` resolver that returned a `DataFrame`), write a `parse` expression that returns a **list** — Chalk explodes it and runs `output_features` once per element.
+A resolver writes one row per message by default. To emit **one row per element** of a collection in the message, write a `parse` expression that returns a **list** — Chalk explodes it and runs `output_features` once per element.
 
 Key points:
 - Set `message_type=list[Element]` — the list type is what tells the engine to explode (a singular `Element` would **not** fan out). `Element` is one output row's worth; the `parse` expression produces the list.
