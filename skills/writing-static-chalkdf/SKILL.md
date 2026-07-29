@@ -22,6 +22,8 @@ This is why Python loops like `for _ in range(5): groups = pointer_jump(groups)`
 >
 > There is **no static list of what serializes** — the ground truth is empirical (`to_proto` + `chalk apply`); see **Verifying Serializability** below. When in doubt, test with *your deployed chalkpy*.
 
+> **Is a full chalkdf rewrite even the right lever?** Reach for it when **data volume** — large has-many / multi-join / windowed inputs that OOM or run slow in the Python worker — is what hurts, because a static chalkdf plan is the only path that **spills to disk and shards**. If the cost is instead per-row Python *logic*, a plain inline `F.*` / `_.` expression or the symbolic-Python accelerator is simpler and enough. The **`chalk-resolver-acceleration`** skill covers that decision (accelerate / express / rewrite / leave) and what won't symbolically translate.
+
 ## Resolver Skeleton
 
 ```python

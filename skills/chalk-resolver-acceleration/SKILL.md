@@ -23,24 +23,32 @@ restructure (or leave) it instead of burning time.
 
 ## 1. The core idea: where your code runs
 
-Every feature value is produced one of two ways, and the difference is almost entirely about **where
+Every feature value is produced one of a few ways, and the difference is almost entirely about **where
 the computation physically runs**:
 
 | Mechanism | Where it runs | Cost |
 |---|---|---|
 | **Inline expression** (`F.*` functions + `_.` references) | In the engine, compiled to native/vectorized code | Lowest — no Python, no thread hop, vectorizes over rows |
 | **Statically-accelerated Python resolver** | In the engine — the resolver's Python is symbolically translated to engine ops | Low — same in-engine execution, written as Python |
+| **Static chalkdf resolver** (`@online(static=True)`, body written in chalkdf `DataFrame` ops) | In the engine — an explicit lazy plan, **spills to disk + shards** | Low — handles has-many/join volumes too big for a Python worker's RAM |
 | **Non-accelerated Python resolver** | On a Python worker thread, per row | Highest — GIL-bound, thread/serialization overhead, no vectorization |
 
 The optimization goal is simple: **move work out of the Python worker path and into the engine.**
-You have two levers:
+You have three levers:
 
-1. **Convert** an existing Python resolver so the static accelerator can translate it, or
+1. **Convert** an existing Python resolver so the static accelerator can translate it,
 2. **Express** the logic directly as an `F.*` / `_.` expression (expressions are *always* in-engine —
-   there's no "will it convert?" question).
+   there's no "will it convert?" question), or
+3. **Rewrite** the resolver body into chalkdf `DataFrame` expressions under `@online(static=True)` —
+   an explicit lazy plan the engine runs natively, and the only lever that **spills to disk** and
+   **shards**. Reach for it when the logic is too heavy for a single inline expression *and* the
+   Python version OOMs or is too slow on large has-many / multi-join / windowed inputs. See the
+   **`writing-static-chalkdf`** skill for the mechanics (explode, join_asof, window functions,
+   struct-pack outputs, serialization gotchas, sharding).
 
-Expressions are the stronger lever. A Python resolver that accelerates is great; an expression
-*can't* fail to accelerate. When designing new features, reach for expressions first.
+Expressions are the stronger of the first two levers. A Python resolver that accelerates is great; an
+expression *can't* fail to accelerate. When designing new features, reach for expressions first — and
+for the chalkdf rewrite (lever 3) when the data volume, not the per-row logic, is what hurts.
 
 ---
 
