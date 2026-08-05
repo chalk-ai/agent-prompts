@@ -822,6 +822,8 @@ client.query(
 
 Once a feature is working the way you want, move its definition into your actual feature class in the codebase and deploy normally (`chalk apply`) - the notebook version is for iteration, not a substitute for committing the feature.
 
+If you use a feature you just defined live as output of an `offline_query`, pass `recompute_features=True`. It has no materialized/cached history to serve from any point-in-time snapshot, so without it the query fails outright (`ChalkBaseException: Failed to execute Chalk operation`) rather than silently returning something wrong.
+
 ### SQL cells' result-variable binding is dashboard-only
 
 In the dashboard, a SQL cell can be configured with a "result variable" name, which binds its query result to a Python variable that later Python cells can reference directly as a chalkdf-style dataframe (`.to_pandas()`, `.with_columns({...})`, filtering with `_`, etc.) without re-running the query. As of this writing, `chalk notebook cell add`/`cell edit` has no flag to set this binding - it's dashboard-only configuration. If you're driving a notebook from the CLI and need a SQL query's rows in a later cell, read the SQL cell's output back explicitly (e.g. `chalk notebook results <notebook-id> <cell>`) rather than assuming a bound variable exists.
@@ -850,6 +852,27 @@ The kernel has both `uv` and `pip` available, but prefer `uv`: it resolves and i
 ```
 
 Avoid `!pip install some-package` - it works, but is noticeably slower for no benefit in this environment.
+
+### Training an XGBoost model: use the native Booster API, not the sklearn wrapper
+
+`!uv pip install xgboost` does not pull in scikit-learn, so `xgb.XGBClassifier(...).fit(...)` - the familiar sklearn-style wrapper - fails with `ImportError: sklearn needs to be installed in order to use this module`, even though you never call any sklearn function yourself. Use xgboost's own `DMatrix`/`train` API instead, which has no sklearn dependency at all:
+
+```python
+import xgboost as xgb
+
+dtrain = xgb.DMatrix(X_train, label=y_train, feature_names=feature_cols)
+dtest = xgb.DMatrix(X_test, label=y_test, feature_names=feature_cols)
+
+model = xgb.train(
+    {"objective": "binary:logistic", "max_depth": 4, "eta": 0.1, "eval_metric": "logloss"},
+    dtrain,
+    num_boost_round=100,
+)
+pred_proba = model.predict(dtest)
+importances = model.get_score(importance_type="gain")  # dict of feature -> importance
+```
+
+If you genuinely want sklearn (e.g. for `train_test_split`, metrics, or other models), `!uv pip install scikit-learn` explicitly rather than assuming it comes along with xgboost.
 
 ## Error Handling
 
