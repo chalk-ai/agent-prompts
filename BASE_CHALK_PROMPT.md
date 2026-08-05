@@ -822,7 +822,7 @@ client.query(
 
 Once a feature is working the way you want, move its definition into your actual feature class in the codebase and deploy normally (`chalk apply`) - the notebook version is for iteration, not a substitute for committing the feature.
 
-If you use a feature you just defined live as output of an `offline_query`, pass `recompute_features=True`. It has no materialized/cached history to serve from any point-in-time snapshot, so without it the query fails outright (`ChalkBaseException: Failed to execute Chalk operation`) rather than silently returning something wrong.
+If you use a feature you just defined live as output of an `offline_query`, pass `recompute_features=True`. Without it, the query samples already-computed values from the online/offline store rather than running resolvers fresh - and a feature you just defined live has no such stored history. Usually it's just better to recompute.
 
 ### SQL cells' result-variable binding is dashboard-only
 
