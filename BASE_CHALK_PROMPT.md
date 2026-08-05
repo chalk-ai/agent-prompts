@@ -727,6 +727,101 @@ dataset = client.offline_query(
 df = dataset.to_pandas()
 ```
 
+## Notebooks
+
+Chalk notebooks (created via `chalk notebook create` and driven with `chalk notebook cell add/edit/run`, or opened directly in the dashboard) are the fastest way to explore features and iterate on queries. See `chalk notebook --help` for the full command reference (create, cell add/edit/move/delete, run, results, get, output rows/download, kernel status).
+
+### Open the notebook in the user's browser as soon as you create it
+
+`chalk notebook create` prints the notebook's dashboard URL. Open it immediately (e.g. `open <url>` on macOS, `xdg-open <url>` on Linux) so the user can watch cells run live in the dashboard while you drive the notebook from the CLI, instead of only seeing your terminal output after the fact.
+
+### Return query results directly - don't call `.to_dict()`, `.to_df()`, or `print()` on them
+
+This is the single most important notebook habit: when a cell's result is an online or offline query response, make the query object itself the cell's last expression. Don't convert it, print it, or otherwise post-process it first.
+
+```python
+# CORRECT - the bare response is the last expression
+result = client.query(
+    input={"user.id": 1},
+    output=["user.id", "user.name", "user.fraud_score"],
+)
+result
+
+# WRONG - throws away the rich rendering
+result = client.query(input={"user.id": 1}, output=[...])
+result.to_dict()          # degrades to a plain dict dump
+print(result)              # degrades to a plain-text repr
+```
+
+Both the dashboard and the CLI (`chalk notebook cell add --run`, etc.) recognize the raw response object and render it as a proper feature/value table - a single row transposes into a readable table, a bulk query renders as a normal table, and has-many features get their own sub-tables. Calling `.to_dict()`/`.to_df()`/`print()` yourself replaces that with a worse, harder-to-read dump, and if you round-trip through Python data structures the renderer has no way to recover the original shape.
+
+The same applies to offline queries - return the `Dataset`/`DatasetRevision` object, or the realized dataframe, directly:
+
+```python
+# CORRECT
+dataset = client.offline_query(
+    input={"user.id": list(range(1000))},
+    output=["user.id", "user.fraud_score"],
+    dataset_name="fraud_training_data",
+    recompute_features=True,
+)
+dataset          # shows dataset/revision metadata, and polls until it's ready
+
+# CORRECT - once you want actual rows
+df = dataset.to_pandas()
+df                # shows a preview table + per-column statistics
+
+# WRONG
+df = dataset.to_pandas()
+print(df.head())   # throws away the preview + statistics rendering
+```
+
+Note that `client.offline_query(...)` returns as soon as the revision is created - it does not wait for the query to finish. Returning the bare `Dataset` object as a cell's last expression is what triggers polling until the revision completes and then shows the preview and statistics tables; there's no need to write your own polling loop or status prints.
+
+### Notebooks don't have your project's package on their path
+
+A notebook created with `chalk notebook create` (or opened in the dashboard) runs in a hosted kernel that only has the `chalk` client installed - it does **not** have your project's own Python package (e.g. `src/`) on its path. Reference features by string FQN rather than importing your feature classes:
+
+```python
+# CORRECT in a hosted notebook
+from chalk.client import ChalkClient
+
+client = ChalkClient()
+result = client.query(input={"user.id": 1}, output=["user.id", "user.fraud_score"])
+result
+
+# WRONG in a hosted notebook - ModuleNotFoundError: No module named 'src'
+from src.models import User
+result = client.query(input={User.id: 1}, output=[User.id, User.fraud_score])
+```
+
+If you're instead running a local Jupyter kernel from within your project's checked-out repo, your feature classes are importable as usual and either style works.
+
+### Charts: always use Altair
+
+Altair is the only charting library installed by default in the notebook kernel - matplotlib and plotly are not installed. Use it, and return the chart as the cell's last expression so it renders inline:
+
+```python
+import altair as alt
+
+alt.Chart(df).mark_bar().encode(
+    x="user.fraud_score",
+    y="count()",
+)
+```
+
+If you need a chart type or transform that isn't in the notebook's default environment, install the specific package with `!uv pip install <package>` (see below) rather than switching charting libraries.
+
+### Installing packages: use `!uv pip install`, not `!pip install`
+
+The kernel has both `uv` and `pip` available, but prefer `uv`: it resolves and installs significantly faster, which matters since you're often waiting on it interactively.
+
+```python
+!uv pip install some-package
+```
+
+Avoid `!pip install some-package` - it works, but is noticeably slower for no benefit in this environment.
+
 ## Error Handling
 
 ### Feature Defaults
