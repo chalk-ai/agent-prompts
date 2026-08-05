@@ -778,24 +778,53 @@ print(df.head())   # throws away the preview + statistics rendering
 
 Note that `client.offline_query(...)` returns as soon as the revision is created - it does not wait for the query to finish. Returning the bare `Dataset` object as a cell's last expression is what triggers polling until the revision completes and then shows the preview and statistics tables; there's no need to write your own polling loop or status prints.
 
-### Notebooks don't have your project's package on their path
+### Notebooks don't have your project's package on their path - use string FQNs or `client.load_features()`
 
-A notebook created with `chalk notebook create` (or opened in the dashboard) runs in a hosted kernel that only has the `chalk` client installed - it does **not** have your project's own Python package (e.g. `src/`) on its path. Reference features by string FQN rather than importing your feature classes:
+A notebook created with `chalk notebook create` (or opened in the dashboard) runs in a hosted kernel that only has the `chalk` client installed - it does **not** have your project's own Python package (e.g. `src/`) on its path, so `from src.models import User` fails with `ModuleNotFoundError`. There are two correct ways to work around this, and no need to reach for anything more elaborate:
 
 ```python
-# CORRECT in a hosted notebook
+# Option 1 - reference features by string FQN, no feature classes needed
 from chalk.client import ChalkClient
 
 client = ChalkClient()
 result = client.query(input={"user.id": 1}, output=["user.id", "user.fraud_score"])
 result
 
-# WRONG in a hosted notebook - ModuleNotFoundError: No module named 'src'
-from src.models import User
+# Option 2 - load the deployed feature classes into the session
+client.load_features()   # binds User, Transaction, CreditReport, etc. as globals
 result = client.query(input={User.id: 1}, output=[User.id, User.fraud_score])
+result
 ```
 
-If you're instead running a local Jupyter kernel from within your project's checked-out repo, your feature classes are importable as usual and either style works.
+`client.load_features()` pulls the feature classes from the deployed environment and binds them into the notebook's namespace, so `User`, `Transaction`, and every other `@features` class become usable exactly as if you'd imported them - without needing your project's package on the kernel's path. This is also what unlocks live feature iteration (below): you need real feature classes, not string FQNs, to attach a new expression feature to one.
+
+If you're instead running a local Jupyter kernel from within your project's checked-out repo, your feature classes are importable as usual and any of these styles work.
+
+### Iterate on feature definitions live in a notebook before committing them
+
+After `client.load_features()`, you can attach a brand-new expression feature directly to a loaded class and test it with a query in the same session - a much faster loop than editing your resolvers file, redeploying, and re-querying for every small change:
+
+```python
+client.load_features()
+
+import chalk.functions as F
+from chalk import _
+
+User.ach_return_amount: float = _.transactions[_.status == "RETURNED", _.amount].sum()
+User.name_email_levenshtein: int = F.levenshtein_distance(F.lower(_.name), F.lower(_.email))
+
+# Test it immediately
+client.query(
+    input={User.id: 1},
+    output=[User.name, User.email, User.ach_return_amount, User.name_email_levenshtein],
+)
+```
+
+Once a feature is working the way you want, move its definition into your actual feature class in the codebase and deploy normally (`chalk apply`) - the notebook version is for iteration, not a substitute for committing the feature.
+
+### SQL cells' result-variable binding is dashboard-only
+
+In the dashboard, a SQL cell can be configured with a "result variable" name, which binds its query result to a Python variable that later Python cells can reference directly as a chalkdf-style dataframe (`.to_pandas()`, `.with_columns({...})`, filtering with `_`, etc.) without re-running the query. As of this writing, `chalk notebook cell add`/`cell edit` has no flag to set this binding - it's dashboard-only configuration. If you're driving a notebook from the CLI and need a SQL query's rows in a later cell, read the SQL cell's output back explicitly (e.g. `chalk notebook results <notebook-id> <cell>`) rather than assuming a bound variable exists.
 
 ### Charts: always use Altair
 
