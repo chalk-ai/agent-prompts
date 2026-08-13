@@ -1,13 +1,13 @@
 ---
 name: chalk-notebooks
-description: Use when creating, running, or debugging a Chalk notebook — via `chalk notebook create`/`cell add`/`cell edit`/`run`, or working inside a notebook opened in the dashboard. Covers running online or offline queries in a cell, iterating on feature definitions live with `client.load_features()`, plotting with Altair, installing packages with `uv`, and training a model (e.g. XGBoost) inside the notebook kernel.
+description: Use when creating, running, inspecting installed Python dependencies, or debugging a Chalk notebook — via `chalk notebook create`/`cell add`/`cell edit`/`dependencies`/`run`, or working inside a notebook opened in the dashboard. Covers running online or offline queries in a cell, iterating on feature definitions live with `client.load_features()`, plotting with Altair, installing packages with `uv`, and training a model (e.g. XGBoost) inside the notebook kernel.
 ---
 
 # Chalk Notebooks
 
 ## Overview
 
-Chalk notebooks (created via `chalk notebook create` and driven with `chalk notebook cell add/edit/run`, or opened directly in the dashboard) are the fastest way to explore features and iterate on queries. See `chalk notebook --help` for the full command reference (create, cell add/edit/move/delete, run, results, get, output rows/download, kernel status).
+Chalk notebooks (created via `chalk notebook create` and driven with `chalk notebook cell add/edit/run`, or opened directly in the dashboard) are the fastest way to explore features and iterate on queries. See `chalk notebook --help` for the full command reference (create, cell add/edit/move/delete, dependencies, run, results, get, output rows/download, kernel status).
 
 The notebook kernel is a separate, hosted Python environment — it is **not** your local machine or your project's checked-out repo. Most of the gotchas below come from that fact: it has its own package set, doesn't have your project's code on its path, and needs to be driven through the `chalk` CLI (or dashboard) rather than direct file access.
 
@@ -113,9 +113,15 @@ Once a feature is working the way you want, move its definition into your actual
 
 If you use a feature you just defined live as output of an `offline_query`, pass `recompute_features=True`. Without it, the query samples already-computed values from the online/offline store rather than running resolvers fresh - and a feature you just defined live has no such stored history. Usually it's just better to recompute.
 
-## SQL cells' result-variable binding is dashboard-only
+## Inspect the kernel's installed pip dependencies
 
-In the dashboard, a SQL cell can be configured with a "result variable" name, which binds its query result to a Python variable that later Python cells can reference directly as a chalkdf-style dataframe (`.to_pandas()`, `.with_columns({...})`, filtering with `_`, etc.) without re-running the query. As of this writing, `chalk notebook cell add`/`cell edit` has no flag to set this binding - it's dashboard-only configuration. If you're driving a notebook from the CLI and need a SQL query's rows in a later cell, read the SQL cell's output back explicitly (e.g. `chalk notebook results <notebook-id> <cell>`) rather than assuming a bound variable exists.
+Run `chalk notebook dependencies <notebook-id>` to list the Python packages actually installed in that notebook's hosted kernel. The normal output is a `Package`/`Version` table; `--json` returns `packages` plus the kernel's server commit, chalkdf version, and libchalk version under `build`. This inspects the remote kernel, not the local Python environment or the project's dependency files, and does not execute a cell.
+
+The CLI optimistically requests packages first. If the kernel reports that it is unavailable, the CLI starts it, waits until ready, and retries once; an already-running kernel needs no status preflight. The kernel remains running for later notebook work. Use `--kernel-timeout` to bound a cold-start wait.
+
+## Bind a cell's result for downstream cells with `--result-variable`
+
+Set `--result-variable <name>` on `chalk notebook cell add` or `cell edit` to bind a Python or SQL cell's result to a variable that later Python cells can reference. For a SQL result, the variable behaves like a chalkdf-style dataframe (`.to_pandas()`, `.with_columns({...})`, filtering with `_`, etc.) without re-running the query.
 
 ## Charts: always use Altair
 
