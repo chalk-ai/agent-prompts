@@ -1,6 +1,6 @@
 ---
 name: chalk-resolver-acceleration
-description: Use when optimizing Chalk feature-pipeline latency — deciding whether to accelerate a Python resolver, migrate it to inline `F.*` / underscore (`_.`) expressions, or leave it as-is; recognizing code that fundamentally won't statically accelerate (module globals, third-party/C libraries, dynamic dicts, reflection, I/O) so you restructure instead of fighting it; and preserving output parity when moving logic from Python into the engine.
+description: Use when optimizing Chalk feature-pipeline latency — deciding whether to accelerate a Python resolver, migrate it to inline `F.*` / underscore (`_.`) expressions, or leave it as-is; recognizing code that fundamentally won't statically accelerate (module globals, third-party/C libraries, dynamic dicts, reflection, I/O) so you restructure instead of fighting it; auditing a repo for un-accelerated calls with chalk-lsp (`unsupported-function` / "not supported by the static accelerator" diagnostics); and preserving output parity when moving logic from Python into the engine.
 ---
 
 # Accelerating Chalk Resolvers & Migrating to Inline Expressions
@@ -16,6 +16,7 @@ restructure (or leave) it instead of burning time.
 - Deciding between a Python resolver and an inline feature expression
 - Triaging which un-accelerated resolvers are worth fixing
 - Recognizing code that won't statically accelerate, and choosing how to restructure around it
+- Auditing a repo for un-accelerated calls (see Part 7 — run chalk-lsp first)
 - Moving blocking network I/O off the Python worker path
 - Preserving output parity when changing how a model-feeding feature is computed
 
@@ -221,7 +222,12 @@ functions only.
 
 ## 5. Decide where to invest: accelerate, express, or leave it
 
-Not every un-accelerated resolver is worth fixing. Triage with two questions:
+Not every un-accelerated resolver is worth fixing.
+
+**Start by getting the inventory:** run `scripts/accel_check.py --all` (Part 7) to turn a vague "our
+pipeline is slow" into a concrete list of blocked calls with file/line. Group the output by target —
+in practice a handful of offenders (one third-party client, one logging call, one `random.*`) account
+for most hits, and fixing the group is one change, not twenty. Then triage with two questions:
 
 **A. How expensive is it, really?**
 - *High value:* loops over large candidate sets, per-row heavy compute, anything on the hot path of a
@@ -263,9 +269,93 @@ scoring logic is higher risk and deserves explicit before/after validation.
 
 ---
 
-## 7. Recognizing acceleration without special tooling
+## 7. Finding un-accelerated code: run chalk-lsp first
 
-If you can't run a static-conversion linter, you can still tell what's happening:
+**`chalk-lsp` is the language server for Chalk projects** — a "language server" is a background
+program your editor talks to that analyzes your code and reports problems. Chalk's fork adds a check
+that no other Python tool has: for every function call inside a resolver, it looks the call up in the
+static accelerator's registry of supported functions and warns when it isn't there. That turns "is
+this resolver accelerated?" from guesswork into a list of file/line hits.
+
+Start every optimization pass here. It takes seconds and replaces a lot of eyeballing.
+
+### 7.1 Running it
+
+```bash
+# once, if you don't have it
+curl -fsSL https://api.chalk.ai/lsp/install.sh | bash
+export PATH="$HOME/.local/bin:$PATH"
+
+# from the Chalk project root (the directory with chalk.yml)
+python3 scripts/accel_check.py neobank/resolvers.py      # one or more files
+python3 scripts/accel_check.py --all                     # whole repo
+python3 scripts/accel_check.py --all --json              # machine-readable
+python3 scripts/accel_check.py --all --fail-on-findings  # for CI
+```
+
+`scripts/accel_check.py` ships alongside this skill. **You need it — you cannot get these
+diagnostics any other way from a terminal:**
+
+- `chalk-lsp check` (the obvious one-shot CLI) emits type errors only. It never emits acceleration
+  diagnostics, even in a fully recognized Chalk project. Don't waste time on it.
+- The acceleration checks are published **only over the language-server protocol**, so something has
+  to act as an LSP client. A running server is a private subprocess of whichever editor spawned it —
+  there is no socket, port, or log file another process can read.
+- An AI coding agent does **not** automatically see these. Agent LSP integrations expose navigation
+  (go-to-definition, hover, find-references), not diagnostics.
+
+So the script starts its own `chalk-lsp`, opens your files, collects what the server publishes, and
+prints it. If you have chalk-lsp configured in your editor, the same warnings appear inline there —
+the script is how you get them in bulk, in CI, or for an agent to read.
+
+### 7.2 Reading the output
+
+```
+neobank/resolvers.py:411:12 [unsupported-function] Call is not supported by the static accelerator
+    -- Target `numpy.random.normal`: no static-accelerator registry entry
+neobank/resolvers.py:181:11 [unsupported-function] Call is not supported by the static accelerator
+    -- Target `time.time`: arguments do not match a registered signature;
+       Observed call: time.time(); Supported: time()
+```
+
+The headline is always generic; **the actionable part is the `Target ...` detail.** Two kinds, and
+they mean different fixes:
+
+| Detail | Meaning | What to do |
+|---|---|---|
+| `no static-accelerator registry entry` | The engine has no implementation of this function at all. | Restructure — Parts 3 and 4. No amount of tweaking arguments will help. |
+| `arguments do not match a registered signature` | The function *is* supported, but not with these argument types. Compare `Observed call:` against `Supported:`. | Often a cheap fix: cast an argument, drop an unsupported kwarg, or use the supported overload. Do these first. |
+
+Other codes you may see: `resolver-cycle` (resolvers call each other in a loop). Suppress a
+known-acceptable hit with `# chalk: ignore[unsupported-function]` on the offending line — but prefer
+fixing or restructuring; a suppression silently keeps the whole resolver in Python.
+
+### 7.3 What it can *not* see — do not read a clean file as a green light
+
+This is a **call-registry check**. It only knows about function calls. It is high-precision (a hit is
+near-certain proof the resolver won't accelerate) but **low-recall** — most of the red flags in Part 4
+are invisible to it, because they aren't function calls the registry tracks.
+
+A test resolver containing five deliberate blockers — a module-global dict lookup, `json.loads`,
+`.items()` iteration over an untyped dict, `datetime.strptime`, and `dataclasses.asdict` — produced
+exactly **one** diagnostic (`dataclasses.asdict`). The other four passed clean.
+
+| Part 4 red flag | Caught by chalk-lsp? |
+|---|---|
+| 4.2 Third-party libs / C extensions (`numpy`, `boto3`, `kubernetes`, `requests`) | **Yes** — this is its strong suit |
+| 4.4 Reflection (`dataclasses.asdict`, `vars`) | **Yes** |
+| 4.7 I/O (`open`, `time.sleep`, network clients) | **Yes** |
+| 4.1 Module-level globals & runtime-loaded data | **No** — you must eyeball it |
+| 4.3 Dynamic/untyped dict shapes (`.items()`, `dict(...)`) | **No** |
+| 4.5 Flexible datetime parsing, naive datetimes | **No** |
+| 4.6 Data-dependent control flow that isn't a fold | **No** |
+
+So the workflow is **chalk-lsp for the inventory, Part 4 by eye for the rest.** A file with zero
+diagnostics still needs a human read before you claim it accelerates.
+
+### 7.4 Confirming the win
+
+chalk-lsp tells you what's blocked, never what's fast. To verify an actual improvement:
 
 - **Query traces / per-resolver timing:** an accelerated resolver (or an expression) does **not**
   appear as a Python resolver execution in traces. If a resolver shows up as a Python step with
@@ -273,8 +363,16 @@ If you can't run a static-conversion linter, you can still tell what's happening
 - **Latency A/B:** build two versions of a query — one with a suspect feature included, one with it
   (and its dependents) removed — and compare end-to-end latency. The delta is that subtree's Python
   cost. (To remove a feature cleanly, also remove everything that transitively depends on it.)
-- **Eyeball the red flags (Part 4):** in practice, scanning a resolver for globals, third-party
-  imports, `.items()` / `asdict` / `dict(...)`, and I/O predicts non-acceleration with high accuracy.
+
+### 7.5 Troubleshooting
+
+- `no chalk.yml or chalk.yaml found` — run from inside the Chalk project.
+- `chalk-lsp not found` — install it (7.1) and make sure `~/.local/bin` is on `PATH`.
+- **A file you expected to flag comes back clean.** The script waits for the server to go quiet;
+  on a large repo or slow machine it can stop early. Re-run with `--timeout 300`, or on that file
+  alone. Cross-check by opening the file in an editor with chalk-lsp configured.
+- Imports must resolve for the server to type calls, so run against the project's virtualenv
+  (`.venv`/`venv` at the root is auto-detected).
 
 ---
 
@@ -293,13 +391,15 @@ If you can't run a static-conversion linter, you can still tell what's happening
 | lookup in a module-global dict | join to a reference feature class |
 
 > Function names above are illustrative — confirm exact `F.*` names against your Chalk version's
-> function catalog.
+> function catalog. chalk-lsp (Part 7) is the fastest check: if a call is unsupported in your
+> version, it says so with the signature the accelerator actually registers.
 
 ---
 
 ### TL;DR
-Move work into the engine. Prefer expressions; make Python resolvers pure and typed; parse once into
-typed shapes; turn reference data and network calls into features / `F.http_*`. Stop pushing when you
-hit a global, a third-party lib, a dynamic dict, reflection, or I/O — restructure around it or leave
-it. Spend effort only where it's both expensive and tractable, and prove output parity whenever the
-feature feeds a model.
+Run `scripts/accel_check.py --all` to inventory what's blocked, then read Part 4 by eye for what the
+tool can't see. Move work into the engine: prefer expressions; make Python resolvers pure and typed;
+parse once into typed shapes; turn reference data and network calls into features / `F.http_*`. Stop
+pushing when you hit a global, a third-party lib, a dynamic dict, reflection, or I/O — restructure
+around it or leave it. Spend effort only where it's both expensive and tractable, and prove output
+parity whenever the feature feeds a model.
