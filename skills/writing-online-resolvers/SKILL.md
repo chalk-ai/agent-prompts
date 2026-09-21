@@ -178,6 +178,27 @@ def parse_account_individuals(
 
 The return annotation `Account.individuals[Individual.field1, ...]` declares which child fields this resolver produces. The body returns the parent class with `individuals=DataFrame([Child(...), ...])`.
 
+### How often each shape runs
+
+The shape you pick decides how many times Chalk calls the resolver. This matters most when the body reads a database.
+
+- **Scalar in** runs **once per row**, and Chalk runs those calls concurrently. A single online query is one row and so one call. A bulk or offline query over 300 rows is 300 calls at the same time.
+- **`DataFrame` in** runs **once for the whole batch**, receiving every row in a single call.
+- A **SQL file resolver** also runs once for the whole batch — Chalk pushes the inputs into the query's `WHERE` clause, so one statement serves every row.
+
+A module-level client does not change this. The client is reused, but a scalar resolver still issues one query per row, so a bulk or offline query can open more connections at once than the database allows. For a per-entity database read, use a SQL file resolver, or a `DataFrame` resolver that queries once for all the ids:
+
+```python
+@online
+def user_txn_counts(users: DataFrame[User.id]) -> DataFrame[User.id, User.txn_count]:
+    ids = users.to_pyarrow().column(0).to_pylist()
+    return pg.query_string(
+        "select user_id as id, count(*) as txn_count from txns "
+        "where user_id = any(:ids) group by user_id",
+        args=dict(ids=ids),
+    ).all()
+```
+
 ---
 
 ## The `Now` Magic Input
@@ -423,6 +444,7 @@ Run unit tests on every PR (no Chalk credentials needed). Run integration tests 
 | Catching `Exception` and returning a default silently | Either return `None` *and* log, or let it raise; silent defaults hide schema drift |
 | One giant `resolvers.py` with 80 functions | Split by domain (`account_resolvers.py`, `risk_resolvers.py`, `proto_parsers.py`) |
 | Per-call gRPC client construction | Use module-level singletons or fold the call into an `F.http_post` expression |
+| Per-entity DB read in a scalar resolver | Fine for a single online query. In a bulk or offline query it runs once per row, concurrently — use a SQL file resolver or a `DataFrame` resolver |
 
 ---
 
