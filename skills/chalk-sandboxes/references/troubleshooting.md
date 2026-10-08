@@ -60,7 +60,7 @@ Inspect inside the session with `tmux list-panes -a -F '#{session_name} #{pane_p
 
 ### Snapshot/resume returns zombie or missing processes
 
-Treat this as an infrastructure restoration defect, not a tmux usage issue. Capture the source sandbox, snapshot/resumed sandbox IDs, `tmux ls`, `ps` output, and relevant hypervisor logs. Until an end-to-end test passes, rely on durable files plus idempotent restart logic rather than process checkpointing.
+Treat this as a restoration issue, not a tmux usage issue. Capture the source sandbox and resumed sandbox IDs, status messages, `tmux ls`, and `ps` output for Chalk Support. Until an end-to-end test passes, rely on durable files plus idempotent restart logic rather than process checkpointing.
 
 ## Observability and artifacts
 
