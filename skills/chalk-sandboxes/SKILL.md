@@ -12,13 +12,13 @@ Use public Chalk documentation and the installed CLI/SDK as the source of truth.
 1. **One-off execution** — one command or short interactive investigation, with automatic cleanup. Read [references/one-off-execution.md](references/one-off-execution.md).
 2. **Durable agent workspace** — work lasting hours or days that must survive local disconnects and support reattachment. Read [references/durable-agent-workspace.md](references/durable-agent-workspace.md).
 
-Before creating a sandbox that must record GitHub pull requests, read and apply the artifact-mode gate in [references/artifacts.md](references/artifacts.md). Read [references/troubleshooting.md](references/troubleshooting.md) when creation, scheduling, execution, attachment, or detection fails.
+Before creating a sandbox that will open or publish a GitHub pull request, read and apply the artifact-compatible defaults in [references/artifacts.md](references/artifacts.md). Read [references/troubleshooting.md](references/troubleshooting.md) when creation, scheduling, execution, attachment, or detection fails.
 
 Do not blend the two modes accidentally. A one-off sandbox should normally use `--rm`; a retained sandbox should have an explicit `--lifetime`, persistence plan, and cleanup owner.
 
-## GitHub pull-request artifact gate
+## GitHub pull-request default
 
-When the requested outcome is a pull request recorded as a Chalk sandbox artifact, all of these conditions are mandatory before creating the sandbox:
+Whenever a task creates a GitHub pull request from a Chalk sandbox, use the artifact-compatible flow by default. The user does not need to know about or explicitly request resource detection. Apply all of these conditions before creating the sandbox:
 
 1. Pass the literal image `node:22-bookworm`. In the Python SDK, use `image="node:22-bookworm"`; do not wrap it in `Image.base(...)` or add image-build steps, because that creates a different image.
 2. Use host compute, not Kubernetes compute.
@@ -27,7 +27,7 @@ When the requested outcome is a pull request recorded as a Chalk sandbox artifac
 5. Allow `api.github.com` by hostname and keep allowed and denied CIDR routes empty.
 6. Create the final pull request through GraphQL `createPullRequest`, using `gh pr create` or [scripts/create-github-pr.mjs](scripts/create-github-pr.mjs). A PR created with GitHub's REST pull-request endpoint will not be recorded.
 
-Treat these as one indivisible configuration. Inspect the saved sandbox spec before creating the PR, and do not claim artifact success until the PR appears in the sandbox resources. If a request also requires Kubernetes compute, catch-all/IP egress, or REST-only PR creation, explain the incompatibility before creating anything. When the recorded artifact is the required outcome, use the supported artifact path; when both requirements are explicitly non-negotiable, ask the user to choose rather than creating a known-undetectable PR.
+Treat these as one indivisible configuration. Do not disable detection merely because the user asked only to open a PR. Inspect the saved sandbox spec before creating the PR, and do not claim artifact success until the PR appears in the sandbox resources. If a request also requires Kubernetes compute, catch-all/IP egress, or REST-only PR creation, explain the incompatibility before creating anything. Treat those settings as implementation preferences when the user primarily wants a PR and choose the supported artifact path. When an incompatible setting is explicitly non-negotiable, ask the user to choose or use a separate host publisher sandbox rather than creating a known-undetectable PR.
 
 ## Invariants
 

@@ -1,6 +1,6 @@
 # GitHub Pull Request Artifacts
 
-Resource detection records resources created through sandbox egress. Today the supported detector is `github-pull-requests`. Creating a Git branch or commit is not enough; create a GitHub pull request from the sandbox.
+Resource detection records resources created through sandbox egress. Today the supported detector is `github-pull-requests`. Use this flow by default whenever a Chalk sandbox creates a GitHub pull request; the user does not need to request an artifact explicitly. Creating a Git branch or commit is not enough; create a GitHub pull request from the sandbox.
 
 ## Hard requirements
 
@@ -29,15 +29,15 @@ After creation, inspect the saved sandbox spec before making any GitHub mutation
 
 ## Resolve incompatible requests before creating anything
 
-Treat a durable PR artifact as an outcome, not a best-effort add-on. Resolve these combinations before sandbox creation:
+Treat detection as part of the normal sandbox PR workflow, not a best-effort add-on. Resolve these combinations before sandbox creation:
 
 | Requested combination | Compatible path |
 | --- | --- |
-| Artifact + Kubernetes compute | Use host compute. If Kubernetes is non-negotiable, explain that current PR detection is unsupported and do not promise an artifact. |
-| Artifact + unrestricted/catch-all egress | Replace the catch-all route with the exact hostname allowlist. If unrestricted egress is non-negotiable, use a separate restricted publisher sandbox or explain that detection cannot be guaranteed. |
-| Artifact + REST-only GitHub workflow | REST may create the branch and content, but the final PR creation must be GraphQL `createPullRequest`. If REST-only is non-negotiable, explain that the PR will not be detected. |
+| Sandbox PR + Kubernetes compute | Use host compute for the PR-producing sandbox. If the workload must remain on Kubernetes, use a separate host publisher sandbox or explain that current PR detection is unsupported. |
+| Sandbox PR + unrestricted/catch-all egress | Replace the catch-all route with the exact hostname allowlist. If unrestricted egress is non-negotiable, use a separate restricted publisher sandbox or explain that detection cannot be guaranteed. |
+| Sandbox PR + REST-only GitHub workflow | REST may create the branch and content, but the final PR creation must be GraphQL `createPullRequest`. If REST-only is non-negotiable, explain that the PR will not be detected. |
 
-When the user's wording makes the artifact the required outcome and names one of the incompatible settings only as an implementation preference, choose the compatible path. When both are explicit, do not silently choose one, proceed with a known-broken combination, or claim success; surface the conflict and request a choice.
+When the user asks generally for a PR and names one of the incompatible settings only as an implementation preference, choose the compatible path without requiring the user to ask for detection. When the incompatible setting is an explicit hard requirement, do not silently proceed with a known-broken combination or claim detection; surface the conflict and request a choice or propose a separate host publisher sandbox.
 
 ## Current safe configuration
 
