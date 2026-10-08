@@ -19,7 +19,7 @@ Do not blend the two modes accidentally. A one-off sandbox should normally use `
 ## Invariants
 
 - Keep API host, authentication config, scope, and environment consistent across login, create, inspect, attach, and terminate commands. Confirm identity and environment before creating resources.
-- Pass credentials through `--secret-from-chalk`, `--secret-from-integration`, or `--secret-from-local-env`; do not place secret values in command lines, prompts, tags, or source control.
+- Pass credentials through Chalk secrets (`--secret-from-chalk`, `--secret-from-integration`, `--secret-from-local-env`, or `Sandbox.add_credentials` in the SDK); do not place secret values in command lines, prompts, tags, or source control. For GitHub PR artifacts, bind credentials to hosts with `Sandbox.add_credentials` instead of injecting a raw env var (see [references/artifacts.md](references/artifacts.md)).
 - Treat the sandbox filesystem as ephemeral. Persist code through commits and pushes, and persist non-code state through a Chalk Volume or another durable store.
 - Grant only the network destinations the task requires. Hostname rules are exact; `github.com` and `api.github.com` are separate hosts.
 - Do not run host-pool maintenance, change environment-wide flags, or create a large fleet unless the user explicitly asked for that operation and understands its blast radius and cost.
