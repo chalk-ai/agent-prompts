@@ -11,7 +11,7 @@ chalk whoami
 chalk sandbox list
 ```
 
-When switching among production, staging, customer, or local control planes, pass the same explicit global API host, auth-config, scope, and environment arguments to every command. Do not infer the active environment from a browser tab.
+When switching among Chalk deployments, environments, or local endpoints, pass the same explicit global API host, auth-config, scope, and environment arguments to every command. Do not infer the active environment from a browser tab.
 
 ## 2. Prepare a host pool deliberately
 
@@ -20,16 +20,16 @@ Host-compute sandboxes run on host pools. Configure them in the dashboard:
 - Cluster scope: **Clusters → selected cluster → Settings → Compute Host Pools**.
 - Environment scope: **Environment → Settings → Compute → Host Pools**.
 
-Cluster pools take precedence: if the cluster has any configured pool, environment-scoped pools are ignored. Prefer a dedicated pool when an experiment needs isolation from unrelated maintenance or workloads.
+Cluster pools take precedence: if the cluster has any configured pool, environment-scoped pools are ignored. Prefer a dedicated pool when a workload needs isolation from unrelated maintenance or workloads.
 
-Choose on-demand capacity (`minimum hosts = 0`) for intermittent dogfooding, or fixed capacity (`minimum hosts = maximum hosts`) when cold-start latency matters. The idle timeout begins only after the last sandbox leaves the pool; it is not a sandbox lifetime.
+Choose on-demand capacity (`minimum hosts = 0`) for intermittent workloads, or fixed capacity (`minimum hosts = maximum hosts`) when cold-start latency matters. The idle timeout begins only after the last sandbox leaves the pool; it is not a sandbox lifetime.
 
 Each sandbox must fit on one host. Leave room for host overhead: a `32Gi` sandbox may not fit a `32Gi` host. Pool maximum hosts limits concurrent capacity, and a full pool reports that all registered capacity is allocated.
 
-Maintenance is currently disruptive to active sandboxes. A dedicated pool limits the blast radius but does not make maintenance non-disruptive. Before a long run:
+Maintenance can interrupt active sandboxes. A dedicated pool limits the impact but does not make maintenance non-disruptive. Before a long run:
 
 1. Check the pool's maintenance schedule and recent maintenance.
-2. Avoid the experiment window or arrange a safe window.
+2. Avoid the planned workload window or arrange a safe maintenance window.
 3. Never use **Run maintenance now** without accepting that active work on that pool may terminate.
 
 Target the exact pool when supported:
@@ -43,11 +43,16 @@ chalk sandbox create \
   --cpu 4 \
   --memory 24Gi \
   --lifetime 24h \
+  --no-routes \
+  --host github.com \
+  --host api.github.com \
   --chalk-identity \
   --tags "owner=$OWNER,purpose=agent-dev"
 ```
 
-If `--host-pool` is unavailable, update the CLI or use a supported SDK rather than claiming scheduler selection proves placement. After creation, inspect the sandbox and dashboard placement before scaling the test.
+The same hostname-policy rule applies to durable sandboxes: a longer lifetime is not a reason to add CIDR routes. Add the exact model-provider, package-registry, or source-control hostnames the workload needs. The example uses the hostname-only form with `--no-routes`; follow [version-compatibility.md](version-compatibility.md) when the installed CLI documents a different hostname-only form.
+
+If `--host-pool` is unavailable, obtain authorization to update the CLI or use a supported SDK rather than claiming scheduler selection proves placement. After creation, inspect the sandbox and dashboard placement before creating additional sandboxes.
 
 ## 3. Size and authorize the workspace
 
@@ -82,7 +87,7 @@ Distinguish three concepts:
 
 - **Tmux reattachment** reconnects to a live tmux server and child process in a running sandbox.
 - **Agent conversation resume** is the agent CLI's own saved-session mechanism.
-- **Sandbox snapshot/resume** is infrastructure restoration and must not be assumed to preserve tmux or child processes unless an end-to-end test proves it for the deployed version.
+- **Sandbox snapshot/resume** is infrastructure restoration and must not be assumed to preserve tmux or child processes unless an end-to-end test proves it for the target Chalk environment.
 
 ## 5. Persist and observe
 
@@ -103,10 +108,10 @@ Before leaving the task unattended, prove that:
 
 ## 6. Scale only after a canary
 
-For fleet testing, run one canary through the entire create → work → detach → reattach → terminate path. Then run a small batch before the full fleet.
+For multi-sandbox workloads, run one canary through the entire create → work → detach → reattach → terminate path. Then run a small batch before creating the remaining sandboxes.
 
-- Give every sandbox deterministic tags such as owner, experiment, and replica.
+- Give every sandbox deterministic tags such as owner, workload, and replica.
 - Confirm per-host fit and total pool capacity before launch.
 - Alert on terminal status and stalled heartbeat, not merely on local client disconnect.
-- Keep the monitor independent of the sandbox when possible. A monitor on a laptop is useful for dogfooding but is not reliable week-long coverage if the laptop sleeps.
-- A large fleet or week-long lifetime is a cost-bearing operation. Require an explicit count, lifetime, environment, pool, and cleanup plan.
+- Keep the monitor independent of the sandbox when possible. A monitor on a workstation is not reliable for multi-day coverage if the workstation sleeps or disconnects.
+- A large batch or week-long lifetime is a cost-bearing operation. Require an explicit count, lifetime, environment, pool, and cleanup plan.
