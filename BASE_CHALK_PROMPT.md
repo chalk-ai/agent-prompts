@@ -63,7 +63,7 @@ class User:
     txn_count: int = _.transactions.count()
     total_spent: float = _.transactions[_.amount].sum()
     large_txns: int = _.transactions[_.amount > 1000].count()
-    email_domain: str = F.lower(F.split_part(_.email, "@", 2))
+    email_domain: str = F.lower(F.split_part(_.email, "@", 1))
 ```
 
 Expressions compile to native code. Use them instead of Python resolvers whenever the logic is arithmetic, comparisons, string ops, or DataFrame filter/project/aggregate. `_` is the current class; `chalk.functions` (`F.*`) holds the builtins.
@@ -89,21 +89,33 @@ Use `_.chalk_window` inside `windowed()`; use `_.chalk_now - timedelta(...)` onl
 
 ## Resolvers
 
-**SQL file resolvers** (`*.chalk.sql`) are the default for loading data:
+**SQL file resolvers** (`*.chalk.sql`) are the default for loading data. For a request-time lookup, use a file such as `user.chalk.sql`:
 
 ```sql
 -- resolves: User
 -- source: pg_users
--- type: online            -- or offline | streaming
--- count: one              -- one | one_or_none | all
--- incremental:            -- offline, append-only tables only
---   mode: row
---   lookback_period: 60m
---   incremental_column: created_at
+-- type: online
+-- count: one
 select id, name, email from users where id = ${user.id}
 ```
 
-Name sources descriptively (not `postgres`). Select explicit columns, never `select *`. Generate programmatically with `make_sql_file_resolver(name=, source=, resolves=, query=)`.
+Chalk parses the leading comments as YAML. Put explanations outside the block or use YAML `#` comments after values. `count` is `one`, `one_or_none`, or `all`; choose `one_or_none` when a missing row is expected.
+
+For incremental ingestion of an append-only transaction table, use a separate file such as `transactions.chalk.sql`:
+
+```sql
+-- resolves: Transaction
+-- source: pg_transactions
+-- type: offline
+-- count: all
+-- incremental:
+--   mode: row
+--   lookback_period: 60m
+--   incremental_column: created_at
+select id, user_id, amount, created_at from transactions
+```
+
+Name sources descriptively (not `postgres`). Select explicit columns, never `select *`. Generate programmatically with `make_sql_file_resolver(name=, source=, resolves=, sql=)`.
 
 **Python resolvers:**
 
@@ -182,13 +194,54 @@ ds = client.offline_query(
 df = ds.to_pandas()
 ```
 
-## Deploy and branch
+## Test and deploy
+
+Test Python resolvers as ordinary functions. Install `chalkdf` as a test dependency for the expression and parser checks below. For expressions, use `chalk.testing.check_expression` with input features and expected output values on each instance:
+
+```python
+from chalk.testing import check_expression
+
+def test_email_domain():
+    check_expression(
+        User.email_domain,
+        [
+            User(id="u1", email="alice@EXAMPLE.COM", email_domain="example.com"),
+            User(id="u2", email="bob@chalk.ai", email_domain="chalk.ai"),
+        ],
+    )
+```
+
+Test stream parsing separately from the deployed pipeline. `check_stream_parsing` checks raw bytes and the `output_features` mapping locally:
+
+```python
+from datetime import datetime, timezone
+from chalk.testing import StreamMessage, check_stream_parsing
+
+def test_txn_stream():
+    check_stream_parsing(
+        txn_stream,
+        [StreamMessage(
+            message=b'{"id":"t1","user_id":"u1","amount":12.5,"ts_ms":1700000000000}',
+            parsed=Transaction(
+                id="t1", user_id="u1", amount=12.5,
+                created_at=datetime(2023, 11, 14, 22, 13, 20, tzinfo=timezone.utc),
+            ),
+        )],
+    )
+```
+
+For custom parsers, test malformed and intentionally filtered messages too; use `parsed=[]` to assert a dropped message (`parsed=None` skips the assertion). To verify uploads, materialized aggregates, or prior store state, use `ChalkClient.check_stream_scenario(..., branch="my-feature")` with a configured branch online store. To inspect a deployed resolver's output, use `ChalkClient.test_streaming_resolver(..., branch="my-feature").features` and assert the actual field values. See https://docs.chalk.ai/docs/streaming-testing.
+
+Run tests and lint before deploying to a branch. `chalk lint --local` limits validation to the local project; `chalk lint` also validates against the server.
 
 ```bash
+uv run pytest
+chalk lint
 chalk apply --branch my-feature        # deploy to a branch
 chalk query --branch my-feature --in user.id=u1 --out user.name
-chalk apply                            # production
 ```
+
+Validate representative outputs and query errors on the branch, including missing inputs and relevant time boundaries. Use `ChalkClient.check(..., branch="my-feature")` for repeatable assertions; pass related feature instances as lists when testing `has_many` inputs. Deploy to production with `chalk apply` only after these checks pass and production deployment is intended.
 
 ## Model registry
 
@@ -202,9 +255,11 @@ make_model_resolver(name="risk", model=risk_model, input=[User.age, User.income]
 
 Register versions outside deployment code with `ChalkClient().register_model_version(name=, aliases=, model=|model_paths=, input_features=, output_features=)`. Versioned outputs use `User.risk_score@2` with `feature(versions=2)`.
 
-## Model Gateway
+## LLM features and Model Gateway
 
-- Call LLMs from Functions through the Model Gateway, and evaluate outputs with Evaluations (Part 3).
+- Use `chalk.prompts.completion` (commonly imported as `P.completion`) when a completion is itself a feature derived from other features, such as sentiment or structured extraction. Prompt templates can reference feature values, and changing their configuration requires a feature deployment. This remains a supported feature-native approach; see https://docs.chalk.ai/docs/prompts.
+- Use a Function (Part 2) when the workload needs a remote Python callable, custom dependencies, multi-step orchestration, or independent compute settings. Functions are also the task interface for Evaluations (Part 3), which compares pinned datasets, tasks, and scorers. Choose the execution model to fit the workload rather than moving every feature completion into a Function.
+- The Model Gateway handles provider routing and policy independently of that choice; it can be called by Functions, applications, or compatible feature expressions. It does not require a Function deployment.
 - The **Model Gateway** is an OpenAI-compatible router over OpenAI, Anthropic, and Gemini with keys, budgets, rate limits, and fallback managed in the dashboard. Base URL `https://api.chalk.ai/v1/router` (your API server host on dedicated deployments); headers `Authorization: Bearer <ROUTER_API_KEY>` and `X-Chalk-Env-Id: <env>`. It also serves the Anthropic Messages API, so Claude Code and Anthropic SDKs point at it directly. Model names carry a connection prefix, e.g. `openai/gpt-5`; list them with `chalk router model list`.
 
 ---
@@ -263,30 +318,20 @@ Secret.from_local_env_file(".env")
 gVisor-isolated containers with private filesystem, network, and PID namespaces. Default `compute_class=ComputeClass.HOST` (managed serverless, sub-2s cold start). `ComputeClass.K8S` runs on your cluster but loses `exec`, network policies, resource detection, managed SSH, and tunnels, and gains `KernelPolicy.OPEN`.
 
 ```python
-from chalkcompute import Image, Sandbox, Secret, Volume, NetworkPolicy, RestartPolicy
+from chalkcompute import Image, Sandbox
 
 sandbox = Sandbox(
-    image=Image.debian_slim("3.12").pip_install(["requests"]).add_local_file("./script.py", "/app/script.py"),
-    name="hello-sandbox",                      # lets you Sandbox.from_name() later
-    cpu="1",
-    memory="2Gi",
-    lifetime="3600s",                          # protobuf duration: seconds + "s"; omit = run until terminated. "1h" is invalid, "0s" raises
-    env={"LOG_LEVEL": "INFO"},
-    secrets=[Secret.from_chalk_env("OPENAI_API_KEY")],
-    volumes=[("training-data", "/data")],
-    network_policy=NetworkPolicy(allowed_hosts=["api.openai.com", "pypi.org", "*.github.com", "github.com"]),
-    restart_policy=RestartPolicy.ALWAYS,       # recreate on node drain/preemption; default NEVER
-    chalk_identity=True,                       # workload identity; required to use the MCP Gateway without a token
-    tags={"team": "ml"},
+    image=Image.debian_slim("3.12"),
+    lifetime="3600s",                          # seconds + "s"; "1h" is invalid
 ).run()                                        # builds image, creates sandbox, waits until running
-
-result = sandbox.exec("python", "/app/script.py", timeout_secs=300, workdir="/app", env={"X": "1"})
-print(result.stdout_text, result.stderr_text, result.exit_code)
-
-info = sandbox.refresh()                       # SandboxInfo; status in pending|running|succeeded|failed...
-sandbox.terminate(grace_period_seconds=30)
+try:
+    result = sandbox.exec("python", "-c", "print('hello')", timeout_secs=30)
+    print(result.stdout_text, result.stderr_text, result.exit_code)
+finally:
+    sandbox.terminate(grace_period_seconds=30)
 ```
 
+- Add `name=` to reattach by name, shared runtime settings as needed, and `restart_policy=RestartPolicy.ALWAYS` for recreation after node drain/preemption (default `NEVER`). `lifetime` omitted means run until terminated; `"0s"` raises. `sandbox.refresh()` returns status and runtime information.
 - `exec` blocks; `exec_stream(...)` streams output; `exec_start(...)` gives stdin and signals. All three need `host`. On `k8s`, pass the command as `entrypoint=` at creation.
 - Reattach from another process: `Sandbox.from_id(id)`, `Sandbox.from_name(name)`, `Sandbox.list_all()`.
 - Long jobs: start detached (`sandbox.exec("sh", "-c", "nohup python train.py > /checkpoints/log 2>&1 &")`), write progress to a volume, reattach later. A recreated sandbox starts from a clean image, so resume from the volume. Lifetime expiry stops the sandbox without draining.
@@ -301,7 +346,15 @@ sandbox.terminate(grace_period_seconds=30)
 
 **Coding agent sandbox** (Claude Code in a fresh checkout):
 
+Set `GITHUB_TOKEN` and `CLAUDE_CODE_OAUTH_TOKEN` as Chalk secrets first, and replace the repository and Git identity below. `add_credentials` restricts egress to its listed hosts; `github.com` needs its own rule for cloning. The provisioner reads the GitHub token to build the HTTPS Basic header, which the proxy injects without putting the token in the sandbox environment. See the [complete setup](https://docs.chalk.ai/docs/sandboxes/coding-agent-sandbox).
+
 ```python
+import base64
+import os
+import uuid
+
+import chalkcompute
+
 @chalkcompute.function(secrets=[chalkcompute.Secret.from_chalk_env("GITHUB_TOKEN")], chalk_identity=True)
 def coding_agent_sandbox(memory_gib: int = 16) -> chalkcompute.Sandbox:
     sandbox = (
@@ -311,6 +364,15 @@ def coding_agent_sandbox(memory_gib: int = 16) -> chalkcompute.Sandbox:
                 .with_claude_code("2.1.270", trusted_dirs=["/workspace/repo"], permission_mode="bypassPermissions")
                 .with_gh().with_tmux().workdir("/workspace/repo"),
             cpu="2", memory=f"{memory_gib}Gi",
+            network_policy=chalkcompute.NetworkPolicy(allowed_hosts={
+                "github.com": [chalkcompute.NetworkPolicy.Rule(transforms=[
+                    chalkcompute.NetworkPolicy.Transformer(headers={
+                        "Authorization": "Basic " + base64.b64encode(
+                            f"x-access-token:{os.environ['GITHUB_TOKEN']}".encode()
+                        ).decode(),
+                    }),
+                ])],
+            }),
             chalk_identity=True,
             env=chalkcompute.GitConfig(name="Your Name", email="you@example.com"),
             resource_detectors=[chalkcompute.ResourceDetector.GITHUB_PULL_REQUESTS],
@@ -319,7 +381,11 @@ def coding_agent_sandbox(memory_gib: int = 16) -> chalkcompute.Sandbox:
         .add_credentials("api.anthropic.com", chalkcompute.Secret.from_chalk_env("CLAUDE_CODE_OAUTH_TOKEN"))
         .run()
     )
-    sandbox.git.clone(url="https://github.com/org/repo.git", path="/workspace/repo", branch="main")
+    try:
+        sandbox.git.clone(url="https://github.com/org/repo.git", path="/workspace/repo", branch="main")
+    except Exception:
+        sandbox.terminate()
+        raise
     return sandbox
 ```
 
@@ -339,61 +405,42 @@ import chalkcompute
 
 img = (
     chalkcompute.Image.debian_slim("3.12")
-    .pip_install(["flask"])
-    .add_local_file("./app.py", "/app/app.py")
-    .entrypoint(["python", "/app/app.py"])           # app must bind 0.0.0.0:<port>
+    .entrypoint(["python", "-m", "http.server", "8080", "--bind", "0.0.0.0"])
 )
 
 sg = chalkcompute.ScalingGroup(
-    image=img,                                         # or a registry string "my-registry/img:v1"
+    image=img,
     name="hello-api",
     port=8080,
-    min_replicas=1,                                    # default 1; 0 enables scale-to-zero
-    max_replicas=3,                                    # default 1
-    cpu="2", memory="4Gi", gpu=None,
-    env={"LOG_LEVEL": "INFO"},
-    secrets=[chalkcompute.Secret.from_chalk_env("API_TOKEN")],
-    volumes=[("model-weights", "/models")],
-    entrypoint=["python", "/app/app.py"],              # overrides the image entrypoint
-    protocol="http",                                   # "grpc" to route gRPC
-    startup_probe=chalkcompute.StartupProbe.http("/health"),
-    target_cpu_utilization_percentage=70,
-    shutdown_delay_seconds=30,
-    scale_from_zero_request_policy=chalkcompute.ScaleFromZeroRequestPolicy.HOLD,   # default returns 503 while scaling up
-    cron_scaling_trigger=chalkcompute.CronScalingTrigger(
-        timezone="America/New_York",
-        windows=[chalkcompute.CronScalingWindow(start="0 8 * * 1-5", end="0 18 * * 1-5", desired_replicas=3)],
-    ),
-).deploy()                                             # builds, uploads, waits for a ready replica (and the probe)
-
-print(sg.web_url)                                      # https://<env-id>-hello-api.<gateway-domain>
-resp = sg.call("/predict", method="POST", json={"text": "hi"}, timeout=60.0)   # ad-hoc; send prod traffic to web_url
-resp.status, resp.json(), resp.text()
-
-info = sg.refresh()                                    # status: Pending | Available | Degraded | ScaledToZero | Unhealthy | Error
-info.ready_replicas, info.available_replicas
-
-sg = chalkcompute.ScalingGroup.from_name("hello-api")  # or .from_id(...)
-sg.delete()
+    min_replicas=1,
+    max_replicas=1,
+).deploy()                                             # builds, uploads, waits for a ready replica
+try:
+    print(sg.web_url)                                  # https://<env-id>-hello-api.<gateway-domain>
+    resp = sg.call("/", method="GET", timeout=60.0)
+    print(resp.status, resp.text())
+finally:
+    sg.delete()                                       # remove this demo service when done
 ```
+
+This uses Python's HTTP server for a smoke test. For an application, install its dependencies, add its source to the image, and set its entrypoint; it must bind `0.0.0.0:<port>`. Send production traffic to `sg.web_url`. Reattach with `ScalingGroup.from_name("hello-api")` or `.from_id(...)`; `sg.refresh()` returns status and replica counts.
+
+Add options only when the service needs them: `protocol="grpc"` for gRPC; `startup_probe=chalkcompute.StartupProbe.http("/health")` and `shutdown_delay_seconds` for [readiness and shutdown](https://docs.chalk.ai/docs/workload-settings/readiness-and-shutdown); `max_replicas`, `target_cpu_utilization_percentage`, or `cron_scaling_trigger` for [autoscaling](https://docs.chalk.ai/docs/workload-settings/autoscaling). `min_replicas=0` enables scale-to-zero; `scale_from_zero_request_policy=chalkcompute.ScaleFromZeroRequestPolicy.HOLD` holds requests during startup instead of returning 503. Shared secrets, volumes, and resource settings remain optional.
 
 **Revisions:** every `deploy()` under the same name records an immutable revision and routes traffic to it, keeping the same ID, name, and URL. `sg.revisions()` lists newest first (`is_current`, `Superseded`); `sg.rollback(revision_id, wait_ready=True, timeout=300)` selects an earlier one without recording a new revision.
 
 **CLI** mirrors the SDK and shares the same objects:
 
 ```bash
-chalk scaling-group create --image=my-registry/llm:v3 --name=llm-inference --port=8080 \
-  --min-replicas=2 --max-replicas=4 --target-cpu=70 --gpu=nvidia-l4:1 --cpu=8 --memory=32Gi \
-  --volume=chalk://llama3-weights=/models/llama3 --secret=HF_TOKEN --env=LOG_LEVEL=INFO \
-  --tags="model=llama3,team=ml" --entrypoint="python,-m,vllm.entrypoints.openai.api_server,--model,/models/llama3"
-chalk scaling-group create ... --min-replicas=0 --scale-from-zero-request-policy=hold
-chalk scaling-group create ... --no-traffic            # record a revision without serving it
-chalk scaling-group list | get --name=X | delete --name=X
-chalk scaling-group revisions list --name=X
-chalk scaling-group update-traffic --name=X --revision-id=<id>   # roll back or promote
+chalk scaling-group create --image=python:3.12-slim --name=hello-api --port=8080 \
+  --max-replicas=1 --entrypoint="python,-m,http.server,8080,--bind,0.0.0.0"
+chalk scaling-group list
+chalk scaling-group get --name=hello-api
+chalk scaling-group revisions list --name=hello-api
+chalk scaling-group delete --name=hello-api
 ```
 
-`--max-replicas` is required on the CLI. `--entrypoint` is comma-separated; the SDK takes a list. `--secret` also accepts `integration:NAME[:KEY1,KEY2]`. Scheduled replica floors are SDK-only. Request a token on the public hostname via workload-settings Authentication.
+`--max-replicas` is required on the CLI. `--entrypoint` is comma-separated; the SDK takes a list. Add `--min-replicas=0 --scale-from-zero-request-policy=hold` to the create command for scale-to-zero, or `--no-traffic` to record a revision without serving it. Promote or roll back with `chalk scaling-group update-traffic --name=hello-api --revision-id=<id>`. `--secret` also accepts `integration:NAME[:KEY1,KEY2]`. Scheduled replica floors are SDK-only. Request a token on the public hostname via workload-settings Authentication.
 
 ## Functions
 
@@ -402,27 +449,20 @@ A Python callable deployed onto a scaling group and registered in the Chalk Cata
 ```python
 import chalkcompute
 
-@chalkcompute.function(
-    image=chalkcompute.Image.debian_slim("3.12").pip_install(["sentence-transformers"]),
-    cpu="2", memory="4Gi", gpu="nvidia-l4",
-    secrets=[chalkcompute.Secret.from_chalk_env("HF_TOKEN")],
-    volumes=[("model-cache", "/models")],
-    retries=3,                                 # transient gRPC failures only; function exceptions are terminal
-    concurrency=4,                             # in-flight cap, default 1; share via key=
-    rate_limit=..., max_batching_size=25, max_buffer_duration=2000,
-    min_replicas=0, max_replicas=8, target_queue_depth=5, target_cpu_utilization_percentage=70,
-    scaling_interval_seconds=30, shutdown_delay_seconds=120,
-)
-def embed(texts: list[str]) -> list[list[float]]:
-    from sentence_transformers import SentenceTransformer   # heavy imports inside the body
-    return SentenceTransformer("all-MiniLM-L6-v2").encode(texts).tolist()
+@chalkcompute.function
+def normalize_text(text: str) -> str:
+    return " ".join(text.lower().split())
 
 if __name__ == "__main__":
-    embed.wait_ready()
-    print(embed.remote(["hello"]))             # embed([...]) would run locally
+    normalize_text.wait_ready()
+    print(normalize_text.remote("  Hello   WORLD  "))  # hello world; normalize_text(...) runs locally
 ```
 
-- Deployment happens when the decorated module is imported, in the background. Every import deploys a new version, so keep uploads, runs, and submissions under `if __name__ == "__main__":`. Attach without redeploying: `RemoteFunction.from_name("embed")` or `from_version_id(id)`.
+Start with the function body and add decorator arguments for actual requirements. Use `image=Image.debian_slim("3.12").pip_install([...])` for third-party dependencies, and import heavy libraries inside the body. Resources, secrets, and volumes use the shared settings above; a function does not require a GPU.
+
+For optional controls, use `concurrency=4` or `rate_limit=100` (calls per second) as simple values, or policy objects for shared limits ([rate and concurrency limits](https://docs.chalk.ai/docs/functions/rate-and-concurrency-limits)). Configure [batching](https://docs.chalk.ai/docs/functions/batching), [retries](https://docs.chalk.ai/docs/functions/retries), and [autoscaling](https://docs.chalk.ai/docs/workload-settings/autoscaling) separately for the workload. Check retry behavior against the installed SDK and make external writes idempotent.
+
+- Deployment happens when the decorated module is imported, in the background. Every import deploys a new version, so keep uploads, runs, and submissions under `if __name__ == "__main__":`. Attach without redeploying: `RemoteFunction.from_name("normalize_text")` or `from_version_id(id)`.
 - Helpers in the function's own top-level package ship automatically when run as a package (`python -m pkg.mod` or via an entrypoint). Running a file by path ships only that file; declare other local code with `Image.add_local_python_source(...)`. Third-party deps still go in `pip_install`.
 - Async: `handle = fn.defer(*args)`, `handle.get(timeout=5.0)` (TimeoutError leaves the call running), `chalkcompute.gather(handles, timeout=30.0)` for ordered fan-out (awaitable inside an event loop). Failures raise `chalkcompute.FunctionError` / `RuntimeError` carrying the original type and message.
 - Streaming: an `async def` generator yields results incrementally; the caller iterates `async for x in fn.remote(...)`. Functions can call other functions with `.remote()` to compose pipelines.
@@ -516,7 +556,7 @@ class TraceQuality(BaseModel):
     reason: str
 
 judge = chalkcompute.scorers.llm_judge(TraceQuality, model="openai/gpt-5", instructions="Grade the agent's login attempt.",
-                                       inputs=("output",), completion_kwargs={"temperature": 0})
+                                       inputs=("output",))
 # deploys as "trace-quality"; with no api_key/base_url it calls the Model Gateway as the environment
 
 intent_judge = chalkcompute.scorers.jev(
