@@ -1,6 +1,6 @@
 ---
 name: chalk-notebooks
-description: Use when creating, running, inspecting installed Python dependencies, or debugging a Chalk notebook — via `chalk notebook create`/`cell add`/`cell edit`/`dependencies`/`run`, or working inside a notebook opened in the dashboard. Covers running online or offline queries in a cell, iterating on feature definitions live with `client.load_features()`, plotting with Altair, installing packages with `uv`, and training a model (e.g. XGBoost) inside the notebook kernel.
+description: Use when creating, running, inspecting installed Python dependencies, or debugging a Chalk notebook — via `chalk notebook create`/`cell add`/`cell edit`/`dependencies`/`run`, or working inside a notebook opened in the dashboard. Covers running online or offline queries in a cell, iterating on feature definitions live with `client.load_features()`, plotting with Altair, installing packages with `uv` (including the `chalkpy[runtime]` extra that offline queries need), recovering from kernel restarts, and training a model (e.g. XGBoost) inside the notebook kernel.
 ---
 
 # Chalk Notebooks
@@ -23,6 +23,16 @@ The notebook kernel is a separate, hosted Python environment — it is **not** y
 ## Open the notebook in the user's browser as soon as you create it
 
 `chalk notebook create` prints the notebook's dashboard URL. Open it immediately (e.g. `open <url>` on macOS, `xdg-open <url>` on Linux) so the user can watch cells run live in the dashboard while you drive the notebook from the CLI, instead of only seeing your terminal output after the fact.
+
+## Install `chalkpy[runtime]` before the first offline query
+
+The kernel's `chalk` client is installed without its `runtime` extra (polars, duckdb, and the cloud storage libraries), and `client.offline_query(...)` needs it. Without it, `offline_query` raises `MissingDependencyException: Missing pip dependency 'chalkpy[runtime]'`. Install it in a cell before the first offline query; no kernel restart is needed:
+
+```python
+!uv pip install "chalkpy[runtime]"
+```
+
+Install the extra rather than bare `polars`: chalkpy pins the polars versions it supports, and the extra respects that pin.
 
 ## Return query results directly - don't call `.to_dict()`, `.to_df()`, or `print()` on them
 
@@ -69,7 +79,7 @@ Note that `client.offline_query(...)` returns as soon as the revision is created
 
 ## Notebooks don't have your project's package on their path - use string FQNs or `client.load_features()`
 
-A notebook created with `chalk notebook create` (or opened in the dashboard) runs in a hosted kernel that only has the `chalk` client installed - it does **not** have your project's own Python package (e.g. `src/`) on its path, so `from src.models import User` fails with `ModuleNotFoundError`. There are two correct ways to work around this, and no need to reach for anything more elaborate:
+A notebook created with `chalk notebook create` (or opened in the dashboard) runs in a hosted kernel that has the `chalk` client and a small data-science baseline installed - it does **not** have your project's own Python package (e.g. `src/`) on its path, so `from src.models import User` fails with `ModuleNotFoundError`. There are two correct ways to work around this, and no need to reach for anything more elaborate:
 
 ```python
 # Option 1 - reference features by string FQN, no feature classes needed
@@ -112,6 +122,21 @@ client.query(
 Once a feature is working the way you want, move its definition into your actual feature class in the codebase and deploy normally (`chalk apply`) - the notebook version is for iteration, not a substitute for committing the feature.
 
 If you use a feature you just defined live as output of an `offline_query`, pass `recompute_features=True`. Without it, the query samples already-computed values from the online/offline store rather than running resolvers fresh - and a feature you just defined live has no such stored history. Usually it's just better to recompute.
+
+Live features exist only in the kernel session that defined them. The client sends the session's live features along with every query it makes, but only from inside a notebook kernel: a plain Python script can't query them, and `client.load_features()` outside a notebook raises `'ChalkClient().load_features()' must be called in a notebook.` To use a feature anywhere else, commit it and `chalk apply`.
+
+Because every query carries every live feature, one invalid definition (for example `_.id + 1` where `id` is a string) makes **every** query from the session fail with `Internal server error` - including queries that don't touch that feature - and the real error only shows in the engine logs. If queries that used to work start failing that way right after you defined a feature, restart the kernel and re-run the setup cells with the definition fixed:
+
+```bash
+chalk notebook kernel stop <notebook-id>
+chalk notebook kernel start <notebook-id>
+```
+
+## The kernel stops when idle - write self-contained cells
+
+The kernel stops after the notebook's **Idle timeout** (set in **Notebook settings**; default 1 hour, configurable from 15 minutes to 8 hours or **Indefinite**). When it starts again, the Python session is empty: `client`, imports, the classes bound by `load_features()`, and any live features are gone, and a cell that relies on them fails with `NameError`. When you're driving a notebook from the CLI over a long session, write cells that create their own client and import what they use instead of relying on state from cells run earlier.
+
+After a restart, re-run `from chalk import _` before defining any expression features. Until you do, `_` is IPython's last-output variable (an empty string in a fresh kernel), and an expression like `_.amount` fails with `AttributeError: 'str' object has no attribute 'amount'`.
 
 ## Inspect the kernel's installed pip dependencies
 
