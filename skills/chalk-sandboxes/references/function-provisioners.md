@@ -2,6 +2,12 @@
 
 Use this guidance when a deployed Chalk Function creates and returns a sandbox. Direct `chalk sandbox create` calls do not require a provisioning function.
 
+## Prefer queued invocation
+
+Default Python callers to `fn.defer(...)` for sandbox provisioning. Queued submission separates accepting the request from worker availability, so a cold start or worker replacement does not require the caller to establish a direct connection to a ready worker. `chalk sandbox start` provides the corresponding queued CLI flow.
+
+Choose `.remote(...)` only when direct-call latency is an explicit workload requirement, with appropriate readiness checks and a bounded retry policy supported by the installed client. Do not switch a provisioner to direct invocation as a timeout workaround. Queued invocation does not require the provisioning function itself to be declared with `async def`.
+
 ## Default to at least two workers
 
 Default sandbox provisioners to at least two function workers so another worker remains available during replacement:

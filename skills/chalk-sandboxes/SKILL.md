@@ -14,7 +14,7 @@ Use public Chalk documentation and the installed CLI/SDK as the source of truth.
 
 Before creating a sandbox that will open or publish a GitHub pull request, read and apply the artifact-compatible defaults in [references/artifacts.md](references/artifacts.md). Read [references/troubleshooting.md](references/troubleshooting.md) when creation, scheduling, execution, attachment, or detection fails.
 
-When deploying or calling a function that provisions sandboxes, read [references/function-provisioners.md](references/function-provisioners.md). Use queued invocation, retain the call ID, and default sandbox provisioners to at least two function-worker replicas.
+When deploying or calling a function that provisions sandboxes, read [references/function-provisioners.md](references/function-provisioners.md). Default Python callers to `.defer()` rather than `.remote()`; use `chalk sandbox start` for the queued CLI flow. Retain the call ID, and default sandbox provisioners to at least two function-worker replicas.
 
 Do not blend the two modes accidentally. A one-off sandbox should normally use `--rm`; a retained sandbox should have an explicit `--lifetime`, persistence plan, and cleanup owner.
 
