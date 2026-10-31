@@ -47,6 +47,10 @@ network_policy = NetworkPolicy(
 
 Do not pass `allowed_routes` or `denied_routes`, including for durable sandboxes.
 
+## Function-based provisioning
+
+For function-based provisioning, inspect `chalk sandbox start --help` for `--arg` and `--call-id`, and confirm that the target function version supports the function queue.
+
 ## Canary after an update
 
 Create one short-lived host sandbox and inspect its saved spec before scaling. Verify:

@@ -42,6 +42,10 @@ Check whether a cluster-scoped pool exists; cluster pools override environment-s
 
 ## Process and attachment
 
+### Provisioning call failed or the client stopped waiting
+
+If the call is pending or running, resume it with `chalk sandbox start --call-id CALL_ID --no-attach`. Do not submit the function again merely because the local client timed out. If the call is failed, inspect the expected sandbox name and list before a new submission: the first execution may already have created the sandbox. See [function-provisioners.md](function-provisioners.md) for worker configuration and provisioning recovery.
+
 ### Exit code `137`
 
 The process received `SIGKILL`; OOM is common when memory reached the limit, but maintenance or another forced termination can look similar. Correlate memory peak, status message, platform events, and audit logs.
