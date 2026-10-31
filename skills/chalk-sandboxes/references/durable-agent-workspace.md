@@ -75,7 +75,7 @@ chalk sandbox attach "$SANDBOX_NAME" --tmux --session claude
 
 Detach with `Ctrl-B`, then `D`. Reattach with the same `chalk sandbox attach` command. Omitting the sandbox opens the interactive sandbox picker; omitting `--session` discovers existing tmux sessions.
 
-If a deployed Chalk function provisions the workspace, the higher-level flow is:
+If a deployed Chalk function provisions the workspace, read [function-provisioners.md](function-provisioners.md) for queued invocation, worker availability, and recovery without resubmitting a create. The higher-level flow is:
 
 ```bash
 chalk sandbox start PROVISIONING_FUNCTION --tmux -- claude

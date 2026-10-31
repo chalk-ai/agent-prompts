@@ -14,6 +14,8 @@ Use public Chalk documentation and the installed CLI/SDK as the source of truth.
 
 Before creating a sandbox that will open or publish a GitHub pull request, read and apply the artifact-compatible defaults in [references/artifacts.md](references/artifacts.md). Read [references/troubleshooting.md](references/troubleshooting.md) when creation, scheduling, execution, attachment, or detection fails.
 
+When deploying or calling a function that provisions sandboxes, read [references/function-provisioners.md](references/function-provisioners.md). Use queued invocation, retain the call ID, and default sandbox provisioners to at least two function-worker replicas.
+
 Do not blend the two modes accidentally. A one-off sandbox should normally use `--rm`; a retained sandbox should have an explicit `--lifetime`, persistence plan, and cleanup owner.
 
 ## GitHub pull-request default
@@ -50,3 +52,4 @@ Public references:
 
 - [Sandbox](https://docs.chalk.ai/docs/compute/sandbox)
 - [Host Pools](https://docs.chalk.ai/docs/compute/host-pools)
+- [Functions](https://docs.chalk.ai/docs/compute/functions)
