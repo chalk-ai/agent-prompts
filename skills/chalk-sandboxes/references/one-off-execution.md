@@ -41,7 +41,7 @@ chalk sandbox create \
 
 - Use the smallest realistic CPU and memory request. Increase it from evidence, not by default.
 - Add a host pool only when placement matters; do not add durable-workspace setup to a disposable run.
-- Use `--secret-from-*` for credentials.
+- For untrusted code calling external APIs, use SDK `Sandbox.add_credentials` so the sandbox receives placeholders. Use `--secret-from-*` only when the workload may read the real values. See [credentials.md](credentials.md).
 - Restrict ordinary egress with `--host` entries, and keep the effective route lists empty even for long-running work. Do not set allowed or denied routes unless the user is explicitly asking for IP/CIDR firewall control. Follow the version-compatible hostname-only syntax in [version-compatibility.md](version-compatibility.md).
 - Use a Chalk Volume only when the output must survive cleanup. A local upload is an input mechanism, not durable output storage.
 
