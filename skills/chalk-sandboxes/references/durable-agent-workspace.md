@@ -60,6 +60,8 @@ Start with the smallest size that has realistic headroom, then use observed peak
 
 Use workload identity for Chalk API access. Add only the external credentials and network hosts the task needs. Prefer an image that already contains Git, tmux, and the agent CLI; otherwise bootstrap once and record how long it takes.
 
+For API keys that agent-generated code must not read, use `Sandbox.add_credentials` and the placeholder flow in [credentials.md](credentials.md). A long-lived workspace still needs a new sandbox to pick up rotated credentials; do not assume the existing sandbox refreshes them.
+
 Do not assume `--restart` preserves the workspace. A restarted sandbox can return from its image with an empty ephemeral filesystem. Use it only when bootstrap is idempotent and all required state is durable.
 
 ## 4. Start durable work in tmux

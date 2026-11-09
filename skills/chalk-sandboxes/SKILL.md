@@ -1,6 +1,6 @@
 ---
 name: chalk-sandboxes
-description: Use when creating or operating Chalk sandboxes for one-off commands or durable agent development, including host-pool placement, lifetimes, tmux reattachment, network access, GitHub PR artifacts, observability, and failure diagnosis.
+description: Use when creating or operating Chalk sandboxes for one-off commands or durable agent development, including host-pool placement, lifetimes, tmux reattachment, network access, per-host API credential injection for untrusted code, GitHub PR artifacts, observability, and failure diagnosis.
 ---
 
 # Chalk Sandboxes
@@ -13,6 +13,8 @@ Use public Chalk documentation and the installed CLI/SDK as the source of truth.
 2. **Durable agent workspace** — work lasting hours or days that must survive local disconnects and support reattachment. Read [references/durable-agent-workspace.md](references/durable-agent-workspace.md).
 
 Before creating a sandbox that will open or publish a GitHub pull request, read and apply the artifact-compatible defaults in [references/artifacts.md](references/artifacts.md). Read [references/troubleshooting.md](references/troubleshooting.md) when creation, scheduling, execution, attachment, or detection fails.
+
+When sandbox code needs external API credentials, read [references/credentials.md](references/credentials.md). Use `Sandbox.add_credentials` for untrusted code that must authenticate without reading the real key; Chalk provides an egress proxy that substitutes host-bound placeholders in request headers.
 
 When deploying or calling a function that provisions sandboxes, read [references/function-provisioners.md](references/function-provisioners.md). Default Python callers to `.defer()` rather than `.remote()`; use `chalk sandbox start` for the queued CLI flow. Retain the call ID, and default sandbox provisioners to at least two function-worker replicas.
 
@@ -36,7 +38,7 @@ Treat these as one indivisible configuration. Do not disable detection merely be
 - Keep API host, authentication config, scope, and environment consistent across login, create, inspect, attach, and terminate commands. Confirm identity and environment before creating resources.
 - Never inspect or print raw Chalk auth configuration, identity-token files, or secret values while diagnosing access. Use `chalk whoami` or an authenticated SDK operation and report only the result.
 - Default to the exact image `node:22-bookworm` for sandbox creation. Pass it directly as the image value; do not substitute a language-specific image or build a custom image merely for convenience. Use another image only when the user explicitly requires it.
-- Pass credentials through `--secret-from-chalk`, `--secret-from-integration`, or `--secret-from-local-env`; do not place secret values in command lines, prompts, tags, or source control.
+- Choose credential delivery according to whether sandbox code may read the key: use `Sandbox.add_credentials` for host-bound API authentication from untrusted code, and use `--secret-from-*` or SDK `secrets` only when the workload may read real secret values. Do not also inject a proxy-bound key through `env` or `secrets`, or place secret values in command lines, prompts, tags, or source control.
 - Treat the sandbox filesystem as ephemeral. Persist code through commits and pushes, and persist non-code state through a Chalk Volume or another durable store.
 - Grant only the network destinations the task requires. Hostname rules are exact; `github.com` and `api.github.com` are separate hosts.
 - Prefer hostname policies for every sandbox, regardless of whether it runs for minutes, hours, or days. Do not configure allowed or denied routes unless the user explicitly asks for IP/CIDR-level controls; those fields directly express low-level sandbox firewall rules and are unnecessary for ordinary egress policy. Use the hostname-only configuration documented for the installed CLI version, as described in [references/version-compatibility.md](references/version-compatibility.md), and verify that the effective allow-route list is empty.
@@ -53,3 +55,5 @@ Public references:
 - [Sandbox](https://docs.chalk.ai/docs/compute/sandbox)
 - [Host Pools](https://docs.chalk.ai/docs/compute/host-pools)
 - [Functions](https://docs.chalk.ai/docs/compute/functions)
+- [Sandbox networking](https://docs.chalk.ai/docs/sandboxes/networking)
+- [Sandbox.add_credentials SDK reference](https://docs.chalk.ai/compute-docs#chalkcompute.Sandbox.add_credentials)
